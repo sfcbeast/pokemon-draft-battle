@@ -932,8 +932,18 @@ function PokemonDraftBattleMultiplayer() {
       const latest = await storageGet(draftKeyFor(roomCodeState, myId));
       if (!latest || latest.done || latest.picks.length >= (room?.teamSize || 4)) return;
       const newPicks = [...latest.picks, mon];
-      const newPool = shuffle(latest.pool.filter((p) => p.id !== mon.id));
       const done = newPicks.length >= (room?.teamSize || 4);
+      // Each pick burns its pool — the next pick gets a whole new set of
+      // options fetched fresh, not just the leftovers from this one.
+      let newPool = [];
+      if (!done) {
+        try {
+          const region = REGIONS.find((r) => r.key === room?.region) || REGIONS[0];
+          newPool = shuffle(await fetchPool(region.range[0], region.range[1], 10));
+        } catch {
+          newPool = shuffle(latest.pool.filter((p) => p.id !== mon.id));
+        }
+      }
       const updated = { pool: newPool, picks: newPicks, done };
       await storageSet(draftKeyFor(roomCodeState, myId), updated);
       setMyDraft(updated);
@@ -1173,6 +1183,8 @@ function PokemonDraftBattleMultiplayer() {
             <div className="text-center text-xs opacity-70 py-6 animate-pulse">Summoning your Pokédex…</div>
           ) : myDraft.done ? (
             <div className="text-center text-xs opacity-70 py-6">Team locked in! Waiting for other trainers…</div>
+          ) : picking ? (
+            <div className="text-center text-xs opacity-70 py-6 animate-pulse">Finding your next options…</div>
           ) : (
             <>
               <div className="text-[10px] text-center opacity-60">{room.regionLabel} · Pick {myDraft.picks.length + 1} of {room.teamSize}</div>
