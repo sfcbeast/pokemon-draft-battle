@@ -152,7 +152,17 @@ function buildMoveset(types, tier) {
 }
 
 async function fetchPokemon(id) {
-  const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${id}`);
+  // A hung PokéAPI request (no response, no error) would otherwise stall
+  // Promise.all forever and leave the draft stuck on its loading state —
+  // force a hard cutoff so a single bad request can never block the pool.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  let res;
+  try {
+    res = await fetch(`https://pokeapi.co/api/v2/pokemon/${id}`, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) throw new Error("fetch failed");
   const data = await res.json();
   const types = data.types.map((t) => t.type.name);
@@ -682,8 +692,13 @@ function PokemonDraftBattleMultiplayer() {
         // running the same 4 Pokémon through the whole knockout.
         const participants = fresh.draftParticipants || fresh.players.map((p) => p.id);
         if (participants.includes(myId)) {
-          const mine = await storageGet(draftKeyFor(roomCodeState, myId));
-          if (mine) setMyDraft(mine);
+          // Skip while a pick is actively being submitted so a poll tick
+          // landing mid-flight can never clobber the in-progress update
+          // with the pre-pick pool.
+          if (!pickLockRef.current) {
+            const mine = await storageGet(draftKeyFor(roomCodeState, myId));
+            if (mine) setMyDraft(mine);
+          }
         } else {
           setMyDraft(null);
         }
