@@ -126,6 +126,23 @@ const REGIONS = [
   { key: "all", label: "All Regions", gen: "I–IX", range: [1, 1025] },
 ];
 
+// National Dex IDs for Legendary and Mythical Pokémon. Fixed list rather
+// than fetched, since PokeAPI only exposes is_legendary/is_mythical via a
+// separate per-Pokémon species lookup — doing that for every candidate
+// would double the already-heavy burst of requests fired on each pick.
+const LEGENDARY_IDS = new Set([
+  144, 145, 146, 150, 151, // Kanto: Articuno, Zapdos, Moltres, Mewtwo, Mew
+  243, 244, 245, 249, 250, 251, // Johto: Raikou, Entei, Suicune, Lugia, Ho-Oh, Celebi
+  377, 378, 379, 380, 381, 382, 383, 384, 385, 386, // Hoenn: Regi trio, Latias/Latios, Kyogre, Groudon, Rayquaza, Jirachi, Deoxys
+  480, 481, 482, 483, 484, 485, 486, 487, 488, 490, 491, 492, 493, // Sinnoh: lake trio, Dialga, Palkia, Heatran, Regigigas, Giratina, Cresselia, Manaphy, Darkrai, Shaymin, Arceus
+  638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 648, 649, // Unova: sword trio, forces of nature, Reshiram, Zekrom, Landorus, Kyurem, Keldeo, Meloetta, Genesect
+  716, 717, 718, 719, 720, 721, // Kalos: Xerneas, Yveltal, Zygarde, Diancie, Hoopa, Volcanion
+  772, 773, 785, 786, 787, 788, 789, 790, 791, 792, 800, 801, 802, 807, 808, 809, // Alola: Silvally line, Tapus, cosmog line, Necrozma, Magearna, Marshadow, Zeraora, Meltan line
+  888, 889, 890, 891, 892, 893, 894, 895, 896, 897, 898, // Galar: Zacian, Zamazenta, Eternatus, Kubfu line, Zarude, Regieleki, Regidrago, riders, Calyrex
+  1001, 1002, 1003, 1004, 1007, 1008, 1009, 1010, 1011, 1017, 1024, 1025, // Paldea: treasures of ruin, paradox legends, loyal three, Ogerpon, Terapagos, Pecharunt
+]);
+const MAX_LEGENDARY_PICKS = 1;
+
 function effectiveness(moveType, defTypes) {
   let m = 1;
   defTypes.forEach((dt) => {
@@ -179,6 +196,7 @@ async function fetchPokemon(id) {
     sprites: { front: data.sprites.front_default, back: data.sprites.back_default || data.sprites.front_default },
     moves: buildMoveset(types, tier),
     bst, tier,
+    legendary: LEGENDARY_IDS.has(data.id),
     maxHp,
     currentHp: maxHp,
   };
@@ -498,6 +516,13 @@ function TierStars({ tier }) {
   return (
     <span className="text-[10px] tracking-wide" title={`Move power tier ${tier} of 3`}>
       {"★".repeat(tier || 1)}{"☆".repeat(3 - (tier || 1))}
+    </span>
+  );
+}
+function LegendaryBadge() {
+  return (
+    <span style={{ background: "#E8B23D", color: "#12141C" }} className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wide">
+      ✨ Legendary
     </span>
   );
 }
@@ -1036,6 +1061,8 @@ function PokemonDraftBattleMultiplayer() {
     try {
       const latest = await storageGet(draftKeyFor(roomCodeState, myId));
       if (!latest || latest.done || latest.picks.length >= (room?.teamSize || 4)) return;
+      const legendariesSoFar = latest.picks.filter((p) => p.legendary).length;
+      if (mon.legendary && legendariesSoFar >= MAX_LEGENDARY_PICKS) return;
       const newPicks = [...latest.picks, mon];
       const done = newPicks.length >= (room?.teamSize || 4);
       // Each pick burns its pool — the next pick gets a whole new set of
@@ -1293,17 +1320,24 @@ function PokemonDraftBattleMultiplayer() {
             <div className="text-center text-xs opacity-70 py-6 animate-pulse">Finding your next options…</div>
           ) : (
             <>
-              <div className="text-[10px] text-center opacity-60">{room.regionLabel} · Pick {myDraft.picks.length + 1} of {room.teamSize}</div>
+              <div className="text-[10px] text-center opacity-60">
+                {room.regionLabel} · Pick {myDraft.picks.length + 1} of {room.teamSize} · Legendaries {myDraft.picks.filter((p) => p.legendary).length}/{MAX_LEGENDARY_PICKS}
+              </div>
               <div className="grid grid-cols-2 gap-2">
-                {myDraft.pool.map((mon) => (
-                  <button key={mon.id} onClick={() => pickMon(mon)} disabled={picking}
-                    style={panel} className="rounded-2xl p-2 flex flex-col items-center gap-1 active:scale-95 transition disabled:opacity-60">
-                    <Sprite src={mon.sprites.front} alt={mon.name} />
-                    <div className="font-bold text-xs">{mon.name}</div>
-                    <TierStars tier={mon.tier} />
-                    <div className="flex gap-1">{mon.types.map((t) => <TypeChip key={t} t={t} />)}</div>
-                  </button>
-                ))}
+                {myDraft.pool.map((mon) => {
+                  const legendaryCapped = mon.legendary && myDraft.picks.filter((p) => p.legendary).length >= MAX_LEGENDARY_PICKS;
+                  return (
+                    <button key={mon.id} onClick={() => pickMon(mon)} disabled={picking || legendaryCapped}
+                      style={panel} className="rounded-2xl p-2 flex flex-col items-center gap-1 active:scale-95 transition disabled:opacity-60">
+                      <Sprite src={mon.sprites.front} alt={mon.name} />
+                      <div className="font-bold text-xs">{mon.name}</div>
+                      <TierStars tier={mon.tier} />
+                      {mon.legendary && <LegendaryBadge />}
+                      <div className="flex gap-1">{mon.types.map((t) => <TypeChip key={t} t={t} />)}</div>
+                      {legendaryCapped && <div className="text-[9px] text-[#D64545] font-bold">Limit reached</div>}
+                    </button>
+                  );
+                })}
               </div>
             </>
           )}
