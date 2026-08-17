@@ -338,18 +338,23 @@ function nextPow2(n) {
 // Pairs players into a knockout round. If the count isn't a power of two,
 // some players get a random bye straight through to the next round so the
 // following round always lands back on a power of two.
-function generateRound(playerIds, roundNum) {
+// `season` makes match ids unique across "play again" restarts of the
+// same room — otherwise round 1's match ids would repeat verbatim every
+// new tournament, and a player's leftover local ref/state from the last
+// tournament could look like it's still "the same match" and never reset.
+function generateRound(playerIds, roundNum, season) {
   const shuffled = shuffle(playerIds);
   const byesNeeded = nextPow2(shuffled.length) - shuffled.length;
   const byePlayers = shuffled.slice(0, byesNeeded);
   const pairPlayers = shuffled.slice(byesNeeded);
   const matchups = [];
   let idx = 0;
+  const prefix = `s${season || 1}r${roundNum}m`;
   byePlayers.forEach((pid) => {
-    matchups.push({ id: `r${roundNum}m${idx++}`, p1: pid, p2: null, winner: pid });
+    matchups.push({ id: `${prefix}${idx++}`, p1: pid, p2: null, winner: pid });
   });
   for (let i = 0; i < pairPlayers.length; i += 2) {
-    matchups.push({ id: `r${roundNum}m${idx++}`, p1: pairPlayers[i], p2: pairPlayers[i + 1], winner: null });
+    matchups.push({ id: `${prefix}${idx++}`, p1: pairPlayers[i], p2: pairPlayers[i + 1], winner: null });
   }
   return matchups;
 }
@@ -814,7 +819,7 @@ function PokemonDraftBattleMultiplayer() {
               teams[pid] = draftStates[i].picks.map((m) => ({ ...m, currentHp: m.maxHp }));
             });
             const roundNum = latest.draftRound || 1;
-            const matchups = generateRound(participants, roundNum);
+            const matchups = generateRound(participants, roundNum, latest.season);
             const updated = { ...latest, status: "bracket", teams, bracket: { round: roundNum, matchups }, rev: latest.rev + 1 };
             const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
             if (ok) {
@@ -1000,7 +1005,7 @@ function PokemonDraftBattleMultiplayer() {
         players: [{ id: myId, name: myName.trim() }],
         maxPlayers: 8, teamSize: 4,
         status: "lobby", teams: null, bracket: null, champion: null,
-        draftParticipants: null, draftRound: 0,
+        draftParticipants: null, draftRound: 0, season: 1,
         rev: 0, createdAt: Date.now(),
       };
       await storageSet(roomKey(code), initial);
@@ -1057,6 +1062,31 @@ function PokemonDraftBattleMultiplayer() {
       else setError("Couldn't start — try again.");
     } catch {
       setError("Couldn't reach the Pokédex network. Try again.");
+    }
+    setStartingTournament(false);
+  }
+
+  // Resets the SAME room back to its lobby so everyone can run it back
+  // without anyone having to re-share or re-enter the room code.
+  async function playAgain() {
+    if (!room || room.hostId !== myId || room.status !== "over") return;
+    setStartingTournament(true); setError("");
+    const latest = await storageGet(roomKey(roomCodeState));
+    if (!latest || latest.hostId !== myId || latest.status !== "over") { setStartingTournament(false); return; }
+    const updated = {
+      ...latest,
+      status: "lobby", teams: null, bracket: null, champion: null,
+      draftParticipants: null, draftRound: 0, season: (latest.season || 1) + 1,
+      rev: latest.rev + 1,
+    };
+    const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
+    if (ok) {
+      setRoom(updated); setScreen("lobby");
+      setMatch(null); setMyDraft(null); setMySubmitted(false); setShowSwitchMenu(false);
+      setSpectateMatchId(null); setSpectatedMatch(null);
+      currentMatchIdRef.current = null; turnCounterRef.current = 0; victoryPlayedRef.current = false;
+    } else {
+      setError("Couldn't restart — try again.");
     }
     setStartingTournament(false);
   }
@@ -1532,8 +1562,14 @@ function PokemonDraftBattleMultiplayer() {
             {room.champion === myId ? "YOU ARE THE CHAMPION!" : "TOURNAMENT OVER"}
           </div>
           <p className="text-xs opacity-70">{nameOf(room, room.champion)} wins the {room.players.length}-player knockout!</p>
+          {room.hostId === myId && (
+            <button onClick={playAgain} disabled={startingTournament} style={{ background: "#3FA796", ...display, fontSize: "10px" }} className="px-4 py-3 rounded-xl text-white disabled:opacity-60">
+              {startingTournament ? "RESETTING…" : "PLAY AGAIN · SAME ROOM"}
+            </button>
+          )}
+          {error && <div className="text-xs text-[#D64545]">{error}</div>}
           <button onClick={leaveRoom} style={{ background: "#D64545", ...display, fontSize: "10px" }} className="px-4 py-2 rounded-lg text-white">
-            NEW ROOM
+            LEAVE / NEW ROOM
           </button>
         </div>
       )}
