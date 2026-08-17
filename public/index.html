@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Draft &amp; Battle Online</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%E2%9A%A1</text></svg>" />
+<style>
+  html, body, #root { height: 100%; margin: 0; background: #12141C; }
+</style>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/plain" id="app-source">
+const { useState, useEffect, useRef } = React;
+
+/* ---------------- Design tokens ----------------
+   bg indigo #12141C · panel cream #EFE6D0 · ink #262433
+   accent red #D64545 · accent gold #E8B23D · accent teal #3FA796
+   Display: "Press Start 2P" (headers/labels only) · Body: "Rubik"
+--------------------------------------------------- */
+
+const TYPE_COLORS = {
+  normal: "#A8A77A", fire: "#EE8130", water: "#6390F0", electric: "#F0C93C",
+  grass: "#7AC74C", ice: "#96D9D6", fighting: "#C22E28", poison: "#A33EA1",
+  ground: "#D9A441", flying: "#A98FF3", psychic: "#F95587", bug: "#A6B91A",
+  rock: "#B6A136", ghost: "#735797", dragon: "#6F35FC", dark: "#8B7364",
+  steel: "#9EA0B8", fairy: "#D685AD",
+};
+
+// Three power tiers per type: [weak, medium, strong]. Which tiers a given
+// Pokémon can roll is gated by its base stat total (see TIER_FOR_BST) so a
+// weak basic like Magikarp can only ever get the weak tier, never the
+// type's strongest move.
+const TYPE_MOVES = {
+  normal: [{ name: "Quick Attack", power: 40 }, { name: "Body Slam", power: 65 }, { name: "Hyper Fang", power: 80 }],
+  fire: [{ name: "Ember", power: 45 }, { name: "Flame Wheel", power: 65 }, { name: "Flamethrower", power: 90 }],
+  water: [{ name: "Water Gun", power: 45 }, { name: "Aqua Tail", power: 65 }, { name: "Surf", power: 90 }],
+  grass: [{ name: "Vine Whip", power: 45 }, { name: "Razor Leaf", power: 65 }, { name: "Solar Beam", power: 100 }],
+  electric: [{ name: "Spark", power: 45 }, { name: "Discharge", power: 65 }, { name: "Thunderbolt", power: 90 }],
+  ice: [{ name: "Ice Shard", power: 45 }, { name: "Aurora Beam", power: 65 }, { name: "Ice Beam", power: 90 }],
+  fighting: [{ name: "Karate Chop", power: 50 }, { name: "Brick Break", power: 65 }, { name: "Submission", power: 85 }],
+  poison: [{ name: "Poison Sting", power: 40 }, { name: "Sludge", power: 65 }, { name: "Sludge Bomb", power: 80 }],
+  ground: [{ name: "Mud Slap", power: 40 }, { name: "Bulldoze", power: 65 }, { name: "Earthquake", power: 100 }],
+  flying: [{ name: "Gust", power: 45 }, { name: "Air Cutter", power: 60 }, { name: "Aerial Ace", power: 75 }],
+  psychic: [{ name: "Confusion", power: 50 }, { name: "Psybeam", power: 65 }, { name: "Psychic", power: 90 }],
+  bug: [{ name: "Bug Bite", power: 50 }, { name: "X-Scissor", power: 70 }, { name: "Megahorn", power: 95 }],
+  rock: [{ name: "Rock Throw", power: 50 }, { name: "Rock Tomb", power: 65 }, { name: "Rock Slide", power: 80 }],
+  ghost: [{ name: "Lick", power: 40 }, { name: "Shadow Claw", power: 65 }, { name: "Shadow Ball", power: 85 }],
+  dragon: [{ name: "Dragon Breath", power: 55 }, { name: "Twister", power: 65 }, { name: "Dragon Claw", power: 85 }],
+  dark: [{ name: "Bite", power: 55 }, { name: "Snarl", power: 65 }, { name: "Crunch", power: 85 }],
+  steel: [{ name: "Metal Claw", power: 50 }, { name: "Steel Wing", power: 65 }, { name: "Iron Head", power: 85 }],
+  fairy: [{ name: "Fairy Wind", power: 45 }, { name: "Draining Kiss", power: 65 }, { name: "Moonblast", power: 90 }],
+};
+
+// Base stat total thresholds separating weak basics (e.g. Magikarp, bst
+// ~200) from mid-strength Pokémon (e.g. most single-stage evolutions) from
+// strong fully-evolved/legendary-tier Pokémon (e.g. Gyarados, bst ~540).
+function tierForBst(bst) {
+  if (bst >= 450) return 3;
+  if (bst >= 320) return 2;
+  return 1;
+}
+
+const CHART = {
+  normal: { rock: 0.5, ghost: 0, steel: 0.5 },
+  fire: { fire: 0.5, water: 0.5, grass: 2, ice: 2, bug: 2, rock: 0.5, dragon: 0.5, steel: 2 },
+  water: { fire: 2, water: 0.5, grass: 0.5, ground: 2, rock: 2, dragon: 0.5 },
+  electric: { water: 2, electric: 0.5, grass: 0.5, ground: 0, flying: 2, dragon: 0.5 },
+  grass: { fire: 0.5, water: 2, grass: 0.5, poison: 0.5, ground: 2, flying: 0.5, bug: 0.5, rock: 2, dragon: 0.5, steel: 0.5 },
+  ice: { fire: 0.5, water: 0.5, grass: 2, ice: 0.5, ground: 2, flying: 2, dragon: 2, steel: 0.5 },
+  fighting: { normal: 2, ice: 2, poison: 0.5, flying: 0.5, psychic: 0.5, bug: 0.5, rock: 2, ghost: 0, dark: 2, steel: 2, fairy: 0.5 },
+  poison: { grass: 2, poison: 0.5, ground: 0.5, rock: 0.5, ghost: 0.5, steel: 0, fairy: 2 },
+  ground: { fire: 2, electric: 2, grass: 0.5, poison: 2, flying: 0, bug: 0.5, rock: 2, steel: 2 },
+  flying: { electric: 0.5, grass: 2, fighting: 2, bug: 2, rock: 0.5, steel: 0.5 },
+  psychic: { fighting: 2, poison: 2, psychic: 0.5, dark: 0, steel: 0.5 },
+  bug: { fire: 0.5, grass: 2, fighting: 0.5, poison: 0.5, flying: 0.5, psychic: 2, ghost: 0.5, dark: 2, steel: 0.5, fairy: 0.5 },
+  rock: { fire: 2, ice: 2, fighting: 0.5, ground: 0.5, flying: 2, bug: 2, steel: 0.5 },
+  ghost: { normal: 0, psychic: 2, ghost: 2, dark: 0.5 },
+  dragon: { dragon: 2, steel: 0.5, fairy: 0 },
+  dark: { fighting: 0.5, psychic: 2, ghost: 2, dark: 0.5, fairy: 0.5 },
+  steel: { fire: 0.5, water: 0.5, electric: 0.5, ice: 2, rock: 2, steel: 0.5, fairy: 2 },
+  fairy: { fire: 0.5, fighting: 2, poison: 0.5, dragon: 2, dark: 2, steel: 0.5 },
+};
+
+const REGIONS = [
+  { key: "kanto", label: "Kanto", gen: "I", range: [1, 151] },
+  { key: "johto", label: "Johto", gen: "II", range: [152, 251] },
+  { key: "hoenn", label: "Hoenn", gen: "III", range: [252, 386] },
+  { key: "sinnoh", label: "Sinnoh", gen: "IV", range: [387, 493] },
+  { key: "unova", label: "Unova", gen: "V", range: [494, 649] },
+  { key: "kalos", label: "Kalos", gen: "VI", range: [650, 721] },
+  { key: "alola", label: "Alola", gen: "VII", range: [722, 809] },
+  { key: "galar", label: "Galar", gen: "VIII", range: [810, 905] },
+  { key: "paldea", label: "Paldea", gen: "IX", range: [906, 1025] },
+  { key: "all", label: "All Regions", gen: "I–IX", range: [1, 1025] },
+];
+
+function effectiveness(moveType, defTypes) {
+  let m = 1;
+  defTypes.forEach((dt) => {
+    const v = CHART[moveType]?.[dt];
+    if (v !== undefined) m *= v;
+  });
+  return m;
+}
+
+function prettyName(n) {
+  return n.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
+}
+
+// tier gates which power band of each type's movepool a Pokémon can roll:
+// tier 1 (weak basics) only ever gets the weakest move per type, tier 3
+// (strong/fully evolved) can roll any of the three.
+function buildMoveset(types, tier) {
+  const pool = [{ name: "Tackle", power: 40, type: "normal" }];
+  types.forEach((t) => (TYPE_MOVES[t] || []).slice(0, tier).forEach((m) => pool.push({ ...m, type: t })));
+  const seen = new Set();
+  const uniq = pool.filter((m) => (seen.has(m.name) ? false : (seen.add(m.name), true)));
+  const rest = uniq.filter((m) => m.name !== "Tackle").sort(() => Math.random() - 0.5).slice(0, 3);
+  return [uniq[0], ...rest];
+}
+
+async function fetchPokemon(id) {
+  const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${id}`);
+  if (!res.ok) throw new Error("fetch failed");
+  const data = await res.json();
+  const types = data.types.map((t) => t.type.name);
+  const statMap = {};
+  data.stats.forEach((s) => (statMap[s.stat.name] = s.base_stat));
+  const bst = data.stats.reduce((sum, s) => sum + s.base_stat, 0);
+  const tier = tierForBst(bst);
+  const maxHp = statMap.hp * 3;
+  return {
+    id: data.id,
+    name: prettyName(data.name),
+    types,
+    stats: { hp: statMap.hp, attack: statMap.attack, defense: statMap.defense, speed: statMap.speed },
+    sprites: { front: data.sprites.front_default, back: data.sprites.back_default || data.sprites.front_default },
+    moves: buildMoveset(types, tier),
+    bst, tier,
+    maxHp,
+    currentHp: maxHp,
+  };
+}
+
+function randUniqueIds(count, min, max) {
+  const s = new Set();
+  const span = max - min + 1;
+  const target = Math.min(count, span);
+  while (s.size < target) s.add(min + Math.floor(Math.random() * span));
+  return [...s];
+}
+
+async function fetchPool(min, max, count) {
+  const ids = randUniqueIds(Math.ceil(count * 1.4), min, max);
+  let mons = (await Promise.all(ids.map((id) => fetchPokemon(id).catch(() => null)))).filter(Boolean);
+  if (mons.length < count) {
+    const more = randUniqueIds(count, min, max).filter((id) => !ids.includes(id));
+    const extra = (await Promise.all(more.map((id) => fetchPokemon(id).catch(() => null)))).filter(Boolean);
+    mons = [...mons, ...extra];
+  }
+  const seen = new Set();
+  mons = mons.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
+  return mons.slice(0, count);
+}
+
+function shuffle(arr) {
+  return [...arr].sort(() => Math.random() - 0.5);
+}
+
+function computeDamage(attacker, defender, move) {
+  const stab = attacker.types.includes(move.type) ? 1.5 : 1;
+  const eff = effectiveness(move.type, defender.types);
+  const rand = 0.85 + Math.random() * 0.15;
+  const base = ((2 * 50 / 5 + 2) * move.power * (attacker.stats.attack / defender.stats.defense)) / 50 + 2;
+  return { dmg: Math.max(1, Math.round(base * stab * eff * rand)), eff };
+}
+
+// A turn action is either a plain number (attack move index) or
+// { switchIdx } (voluntarily swap in a bench Pokémon instead of attacking).
+function isSwitchAction(a) {
+  return !!a && typeof a === "object" && "switchIdx" in a;
+}
+function isBattleAction(a) {
+  return typeof a === "number" || isSwitchAction(a);
+}
+
+// A single 1v1 match between two players (identified generically as p1/p2
+// rather than host/guest, since any two tournament participants can meet).
+function resolveTurn(match, p1Action, p2Action) {
+  const p1 = match.p1, p2 = match.p2;
+  let p1Idx = match.activeIdx[p1];
+  let p2Idx = match.activeIdx[p2];
+  const newLog = [];
+
+  const p1Switch = isSwitchAction(p1Action);
+  const p2Switch = isSwitchAction(p2Action);
+  if (p1Switch) {
+    p1Idx = p1Action.switchIdx;
+    newLog.push(`${match.p1Name} withdraws ${match.teams[p1][match.activeIdx[p1]].name}! Go, ${match.teams[p1][p1Idx].name}!`);
+  }
+  if (p2Switch) {
+    p2Idx = p2Action.switchIdx;
+    newLog.push(`${match.p2Name} withdraws ${match.teams[p2][match.activeIdx[p2]].name}! Go, ${match.teams[p2][p2Idx].name}!`);
+  }
+
+  const p1Mon = match.teams[p1][p1Idx];
+  const p2Mon = match.teams[p2][p2Idx];
+  let hp1 = p1Mon.currentHp, hp2 = p2Mon.currentHp;
+
+  const steps = [];
+  if (!p1Switch && typeof p1Action === "number") steps.push({ side: "p1", move: p1Mon.moves[p1Action] });
+  if (!p2Switch && typeof p2Action === "number") steps.push({ side: "p2", move: p2Mon.moves[p2Action] });
+  if (steps.length === 2) {
+    const p1First = p1Mon.stats.speed === p2Mon.stats.speed ? Math.random() < 0.5 : p1Mon.stats.speed > p2Mon.stats.speed;
+    if (!p1First) steps.reverse();
+  }
+
+  for (const step of steps) {
+    if (step.side === "p1" && hp1 <= 0) continue;
+    if (step.side === "p2" && hp2 <= 0) continue;
+    const atk = step.side === "p1" ? p1Mon : p2Mon;
+    const def = step.side === "p1" ? p2Mon : p1Mon;
+    const atkName = step.side === "p1" ? match.p1Name : match.p2Name;
+    const { dmg, eff } = computeDamage(atk, def, step.move);
+    newLog.push(`${atk.name} (${atkName}) used ${step.move.name}!`);
+    if (eff === 0) newLog.push("It has no effect...");
+    else if (eff > 1) newLog.push("It's super effective!");
+    else if (eff < 1) newLog.push("It's not very effective...");
+    if (step.side === "p1") hp2 = Math.max(0, hp2 - dmg);
+    else hp1 = Math.max(0, hp1 - dmg);
+  }
+  if (hp2 <= 0) newLog.push(`${p2Mon.name} fainted!`);
+  if (hp1 <= 0) newLog.push(`${p1Mon.name} fainted!`);
+
+  const newP1Team = match.teams[p1].map((m, i) => (i === p1Idx ? { ...m, currentHp: hp1 } : m));
+  const newP2Team = match.teams[p2].map((m, i) => (i === p2Idx ? { ...m, currentHp: hp2 } : m));
+  const p1Alive = newP1Team.some((m) => m.currentHp > 0);
+  const p2Alive = newP2Team.some((m) => m.currentHp > 0);
+
+  let status = match.status, winner = null, pendingSwitch = null;
+  if (!p1Alive) { status = "over"; winner = p2; }
+  else if (!p2Alive) { status = "over"; winner = p1; }
+  else if (hp2 <= 0) pendingSwitch = p2;
+  else if (hp1 <= 0) pendingSwitch = p1;
+
+  return {
+    ...match,
+    activeIdx: { ...match.activeIdx, [p1]: p1Idx, [p2]: p2Idx },
+    teams: { ...match.teams, [p1]: newP1Team, [p2]: newP2Team },
+    log: [...match.log, ...newLog],
+    status, winner, pendingSwitch,
+    turnCounter: (match.turnCounter || 0) + 1,
+  };
+}
+
+function genCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let c = "";
+  for (let i = 0; i < 5; i++) c += chars[Math.floor(Math.random() * chars.length)];
+  return c;
+}
+
+function nextPow2(n) {
+  let p = 1;
+  while (p < n) p *= 2;
+  return p;
+}
+
+// Pairs players into a knockout round. If the count isn't a power of two,
+// some players get a random bye straight through to the next round so the
+// following round always lands back on a power of two.
+function generateRound(playerIds, roundNum) {
+  const shuffled = shuffle(playerIds);
+  const byesNeeded = nextPow2(shuffled.length) - shuffled.length;
+  const byePlayers = shuffled.slice(0, byesNeeded);
+  const pairPlayers = shuffled.slice(byesNeeded);
+  const matchups = [];
+  let idx = 0;
+  byePlayers.forEach((pid) => {
+    matchups.push({ id: `r${roundNum}m${idx++}`, p1: pid, p2: null, winner: pid });
+  });
+  for (let i = 0; i < pairPlayers.length; i += 2) {
+    matchups.push({ id: `r${roundNum}m${idx++}`, p1: pairPlayers[i], p2: pairPlayers[i + 1], winner: null });
+  }
+  return matchups;
+}
+
+function nameOf(room, pid) {
+  return room?.players?.find((p) => p.id === pid)?.name || "???";
+}
+
+// Deterministically derives a fresh match record from the room's drafted
+// rosters. Safe to call more than once for the same matchup (e.g. as a
+// self-heal if the record went missing) since it depends only on
+// immutable room data, never on Math.random() pairing decisions.
+function buildFreshMatch(room, mu) {
+  const p1 = mu.p1, p2 = mu.p2;
+  return {
+    id: mu.id, p1, p2,
+    p1Name: nameOf(room, p1), p2Name: nameOf(room, p2),
+    teams: {
+      [p1]: room.teams[p1].map((m) => ({ ...m, currentHp: m.maxHp })),
+      [p2]: room.teams[p2].map((m) => ({ ...m, currentHp: m.maxHp })),
+    },
+    activeIdx: { [p1]: null, [p2]: null },
+    status: "choose-lead",
+    pendingSwitch: null,
+    log: [`${nameOf(room, p1)} vs ${nameOf(room, p2)}!`],
+    turnCounter: 0,
+    winner: null,
+  };
+}
+
+// Real backend now: shared state lives on the server (KV REST API), and
+// "personal" (non-shared) state lives in the browser's own localStorage
+// so an id/room survives a refresh without leaking across devices.
+async function storageGet(key, shared = true) {
+  try {
+    if (!shared) {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    }
+    const res = await fetch(`/api/kv/${encodeURIComponent(key)}`);
+    if (res.status === 404) return null;
+    if (!res.ok) return null;
+    const r = await res.json();
+    return r && r.value !== undefined ? JSON.parse(r.value) : null;
+  } catch {
+    return null;
+  }
+}
+async function storageSet(key, value, shared = true) {
+  try {
+    if (!shared) {
+      localStorage.setItem(key, JSON.stringify(value));
+      return;
+    }
+    await fetch(`/api/kv/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: JSON.stringify(value) }),
+    });
+  } catch (e) {
+    console.error("storage set failed", e);
+  }
+}
+async function storageDelete(key, shared = true) {
+  try {
+    if (!shared) {
+      localStorage.removeItem(key);
+      return;
+    }
+    await fetch(`/api/kv/${encodeURIComponent(key)}`, { method: "DELETE" });
+  } catch {
+    // key may not exist yet - fine to ignore
+  }
+}
+
+const roomKey = (code) => `pkmn-room-${code}`;
+// Each player's draft is private and lives under their own key — no
+// contention even with up to 8 people drafting at once.
+const draftKeyFor = (code, playerId) => `pkmn-draft-${code}-${playerId}`;
+// Each 1v1 match in the bracket is its own record, so concurrently running
+// matches (e.g. 4 at once in an 8-player round 1) never contend with
+// each other.
+const matchKey = (code, matchId) => `pkmn-match-${code}-${matchId}`;
+// Each player writes their in-match action to their OWN key (never a
+// shared read-modify-write key) — avoids a last-write-wins race when both
+// players in a match act at once.
+const moveKeyFor = (code, matchId, playerId) => `pkmn-mv-${code}-${matchId}-${playerId}`;
+// Personal (non-shared, per-user) keys used to survive a page refresh.
+const PERSONAL_ID_KEY = "pkmn-my-player-id";
+const ACTIVE_ROOM_KEY = "pkmn-active-room";
+
+// Any connected client can attempt to resolve/advance shared state (not
+// just the host), so the game never stalls just because one tab lost
+// focus. Since multiple clients could race to apply the same transition,
+// re-check the expected "version" field hasn't already moved before
+// committing — whoever loses the race just skips writing; their update is
+// discarded and the next poll picks up whatever the winner wrote.
+async function commitIfRevMatches(key, fresh, updated) {
+  const check = await storageGet(key);
+  if (!check || check.rev !== fresh.rev) return false;
+  await storageSet(key, updated);
+  return true;
+}
+async function commitIfTurnMatches(key, fresh, updated) {
+  const check = await storageGet(key);
+  if (!check || check.turnCounter !== fresh.turnCounter) return false;
+  await storageSet(key, updated);
+  return true;
+}
+
+function TypeChip({ t }) {
+  return (
+    <span style={{ background: TYPE_COLORS[t] || "#888" }} className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase text-white tracking-wide">
+      {t}
+    </span>
+  );
+}
+// Shows a Pokémon's move-power tier (1-3) so trainers can see at a glance
+// whether it's a weak basic or a strong fully-evolved pick before drafting.
+function TierStars({ tier }) {
+  return (
+    <span className="text-[10px] tracking-wide" title={`Move power tier ${tier} of 3`}>
+      {"★".repeat(tier || 1)}{"☆".repeat(3 - (tier || 1))}
+    </span>
+  );
+}
+function HpBar({ hp, maxHp }) {
+  const pct = Math.max(0, (hp / maxHp) * 100);
+  const color = pct > 50 ? "#3FA796" : pct > 20 ? "#E8B23D" : "#D64545";
+  return (
+    <div style={{ background: "#1c1e2a", border: "2px solid #262433" }} className="w-full h-3 rounded-full overflow-hidden">
+      <div style={{ width: `${pct}%`, background: color, transition: "width 0.4s ease" }} className="h-full" />
+    </div>
+  );
+}
+function Sprite({ src, alt, flip }) {
+  return src ? (
+    <img src={src} alt={alt} style={{ imageRendering: "pixelated", transform: flip ? "scaleX(-1)" : "none" }} className="w-24 h-24 object-contain drop-shadow-lg" />
+  ) : (
+    <div className="w-24 h-24 flex items-center justify-center text-4xl">❓</div>
+  );
+}
+
+function BracketOverview({ room, myId }) {
+  const mu = room.bracket?.matchups.find((m) => m.p1 === myId || m.p2 === myId);
+  let status = "eliminated";
+  if (mu) {
+    if (!mu.p2) status = "bye";
+    else if (mu.winner) status = mu.winner === myId ? "advancing" : "eliminated";
+    else status = "waiting";
+  }
+  return (
+    <div className="w-full max-w-md flex flex-col gap-3 items-center">
+      <div style={{ fontFamily: "'Press Start 2P', monospace", fontSize: "10px" }} className="text-[#E8B23D]">ROUND {room.bracket?.round}</div>
+      {status === "bye" && <p className="text-xs text-center text-[#3FA796]">You got a bye this round — advancing automatically! Waiting for other matches…</p>}
+      {status === "eliminated" && <p className="text-xs text-center text-[#D64545]">You were eliminated. Watching the rest of the knockout…</p>}
+      {status === "waiting" && <p className="text-xs text-center opacity-70">Loading your match…</p>}
+      <div className="w-full flex flex-col gap-1">
+        {(room.bracket?.matchups || []).map((m) => (
+          <div key={m.id} style={{ background: "#EFE6D0", color: "#262433", border: "3px solid #262433" }} className="rounded-lg px-3 py-2 text-xs flex items-center justify-between gap-2">
+            <span className="font-bold">
+              {nameOf(room, m.p1)} {m.p2 ? `vs ${nameOf(room, m.p2)}` : "(bye)"}
+            </span>
+            <span className="opacity-70 whitespace-nowrap">{m.winner ? `→ ${nameOf(room, m.winner)}` : "in progress"}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PokemonDraftBattleMultiplayer() {
+  const [myId, setMyId] = useState(null);
+  const [initializing, setInitializing] = useState(true);
+  const [myName, setMyName] = useState("");
+  const [screen, setScreen] = useState("home"); // home, create, join, lobby, draft, bracket, over
+  const [selectedRegion, setSelectedRegion] = useState("kanto");
+  const [joinCode, setJoinCode] = useState("");
+  const [roomCodeState, setRoomCodeState] = useState("");
+  const [room, setRoom] = useState(null);
+  const [match, setMatch] = useState(null);
+  const [myDraft, setMyDraft] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [startingTournament, setStartingTournament] = useState(false);
+  const [error, setError] = useState("");
+  const [mySubmitted, setMySubmitted] = useState(false);
+  const [showSwitchMenu, setShowSwitchMenu] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [copyLabel, setCopyLabel] = useState("Copy code");
+  const turnCounterRef = useRef(0);
+  const currentMatchIdRef = useRef(null);
+  const pickLockRef = useRef(false);
+  const logEndRef = useRef(null);
+
+  // Restore identity + rejoin an in-progress room after a page refresh.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let id = await storageGet(PERSONAL_ID_KEY, false);
+      if (!id) {
+        id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+        await storageSet(PERSONAL_ID_KEY, id, false);
+      }
+      if (cancelled) return;
+      setMyId(id);
+
+      const active = await storageGet(ACTIVE_ROOM_KEY, false);
+      if (active && active.code) {
+        const r = await storageGet(roomKey(active.code), true);
+        if (r && r.players.some((p) => p.id === id)) {
+          setMyName(active.name || nameOf(r, id) || "");
+          setRoomCodeState(active.code);
+          setRoom(r);
+          if (r.status === "lobby") setScreen("lobby");
+          else if (r.status === "drafting") setScreen("draft");
+          else if (r.status === "bracket") setScreen("bracket");
+          else if (r.status === "over") setScreen("over");
+        } else {
+          await storageDelete(ACTIVE_ROOM_KEY, false);
+        }
+      }
+      if (!cancelled) setInitializing(false);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [match?.log?.length]);
+
+  // Unified poll loop: keeps room/draft/match state fresh, and lets this
+  // client help resolve shared transitions (draft complete → bracket,
+  // round complete → next round, choose-lead / battle turns).
+  useEffect(() => {
+    if (!myId || !["lobby", "draft", "bracket", "over"].includes(screen) || !roomCodeState) return;
+    let cancelled = false;
+    const tick = async () => {
+      let fresh = await storageGet(roomKey(roomCodeState));
+      if (!fresh || cancelled) return;
+
+      if (fresh.status === "drafting") {
+        const mine = await storageGet(draftKeyFor(roomCodeState, myId));
+        if (mine) setMyDraft(mine);
+
+        const draftStates = await Promise.all(fresh.players.map((p) => storageGet(draftKeyFor(roomCodeState, p.id))));
+        const allDone = draftStates.length > 0 && draftStates.every((d) => d && d.done);
+        if (allDone) {
+          const latest = await storageGet(roomKey(roomCodeState));
+          if (latest && latest.status === "drafting" && latest.rev === fresh.rev) {
+            const teams = {};
+            latest.players.forEach((p, i) => {
+              teams[p.id] = draftStates[i].picks.map((m) => ({ ...m, currentHp: m.maxHp }));
+            });
+            const matchups = generateRound(latest.players.map((p) => p.id), 1);
+            const updated = { ...latest, status: "bracket", teams, bracket: { round: 1, matchups }, rev: latest.rev + 1 };
+            const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
+            if (ok) {
+              await Promise.all(matchups.filter((m) => m.p2).map((mu) => storageSet(matchKey(roomCodeState, mu.id), buildFreshMatch(latest, mu))));
+              fresh = updated;
+            }
+          }
+        }
+      } else if (fresh.status === "bracket") {
+        // Try to advance the round once every matchup (including byes) has a winner.
+        if (fresh.bracket.matchups.every((m) => m.winner)) {
+          const winners = fresh.bracket.matchups.map((m) => m.winner);
+          const latest = await storageGet(roomKey(roomCodeState));
+          if (latest && latest.status === "bracket" && latest.rev === fresh.rev) {
+            if (winners.length === 1) {
+              const updated = { ...latest, status: "over", champion: winners[0], rev: latest.rev + 1 };
+              const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
+              if (ok) fresh = updated;
+            } else {
+              const nextRound = latest.bracket.round + 1;
+              const matchups = generateRound(winners, nextRound);
+              const updated = { ...latest, bracket: { round: nextRound, matchups }, rev: latest.rev + 1 };
+              const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
+              if (ok) {
+                await Promise.all(matchups.filter((m) => m.p2).map((mu) => storageSet(matchKey(roomCodeState, mu.id), buildFreshMatch(latest, mu))));
+                fresh = updated;
+              }
+            }
+          }
+        }
+
+        if (fresh.status === "bracket") {
+          const myMu = fresh.bracket.matchups.find((m) => !m.winner && (m.p1 === myId || m.p2 === myId));
+          if (myMu) {
+            const mKey = matchKey(roomCodeState, myMu.id);
+            let freshMatch = await storageGet(mKey);
+            if (!freshMatch) {
+              freshMatch = buildFreshMatch(fresh, myMu);
+              await storageSet(mKey, freshMatch);
+            }
+            if (currentMatchIdRef.current !== myMu.id) {
+              currentMatchIdRef.current = myMu.id;
+              turnCounterRef.current = freshMatch.turnCounter || 0;
+              setMySubmitted(false);
+              setShowSwitchMenu(false);
+            }
+
+            if (freshMatch.status === "choose-lead") {
+              const p1Lead = await storageGet(moveKeyFor(roomCodeState, myMu.id, freshMatch.p1));
+              const p2Lead = await storageGet(moveKeyFor(roomCodeState, myMu.id, freshMatch.p2));
+              const validLead = (v) => v && typeof v === "object" && typeof v.leadIdx === "number";
+              if (validLead(p1Lead) && validLead(p2Lead)) {
+                const updated = {
+                  ...freshMatch,
+                  status: "battle",
+                  activeIdx: { [freshMatch.p1]: p1Lead.leadIdx, [freshMatch.p2]: p2Lead.leadIdx },
+                  log: [
+                    ...freshMatch.log,
+                    `${freshMatch.p1Name} sends out ${freshMatch.teams[freshMatch.p1][p1Lead.leadIdx].name}!`,
+                    `${freshMatch.p2Name} sends out ${freshMatch.teams[freshMatch.p2][p2Lead.leadIdx].name}!`,
+                  ],
+                  turnCounter: (freshMatch.turnCounter || 0) + 1,
+                };
+                if (await commitIfTurnMatches(mKey, freshMatch, updated)) {
+                  await storageSet(moveKeyFor(roomCodeState, myMu.id, freshMatch.p1), null);
+                  await storageSet(moveKeyFor(roomCodeState, myMu.id, freshMatch.p2), null);
+                  freshMatch = updated;
+                }
+              }
+            } else if (freshMatch.status === "battle") {
+              const p1Move = await storageGet(moveKeyFor(roomCodeState, myMu.id, freshMatch.p1));
+              const p2Move = await storageGet(moveKeyFor(roomCodeState, myMu.id, freshMatch.p2));
+              if (freshMatch.pendingSwitch) {
+                const need = freshMatch.pendingSwitch;
+                const mv = need === freshMatch.p1 ? p1Move : p2Move;
+                if (mv && typeof mv === "object" && "switchIdx" in mv) {
+                  const mon = freshMatch.teams[need][mv.switchIdx];
+                  const nameOfNeed = need === freshMatch.p1 ? freshMatch.p1Name : freshMatch.p2Name;
+                  const updated = {
+                    ...freshMatch,
+                    activeIdx: { ...freshMatch.activeIdx, [need]: mv.switchIdx },
+                    pendingSwitch: null,
+                    log: [...freshMatch.log, `${nameOfNeed} sends out ${mon.name}!`],
+                    turnCounter: (freshMatch.turnCounter || 0) + 1,
+                  };
+                  if (await commitIfTurnMatches(mKey, freshMatch, updated)) {
+                    await storageSet(moveKeyFor(roomCodeState, myMu.id, need), null);
+                    freshMatch = updated;
+                  }
+                }
+              } else if (isBattleAction(p1Move) && isBattleAction(p2Move)) {
+                const updated = resolveTurn(freshMatch, p1Move, p2Move);
+                if (await commitIfTurnMatches(mKey, freshMatch, updated)) {
+                  await storageSet(moveKeyFor(roomCodeState, myMu.id, freshMatch.p1), null);
+                  await storageSet(moveKeyFor(roomCodeState, myMu.id, freshMatch.p2), null);
+                  freshMatch = updated;
+                }
+              }
+            } else if (freshMatch.status === "over" && !myMu.winner) {
+              const latestRoom = await storageGet(roomKey(roomCodeState));
+              if (latestRoom && latestRoom.status === "bracket") {
+                const target = latestRoom.bracket.matchups.find((m) => m.id === myMu.id);
+                if (target && !target.winner) {
+                  const mus = latestRoom.bracket.matchups.map((m) => (m.id === myMu.id ? { ...m, winner: freshMatch.winner } : m));
+                  const updated = { ...latestRoom, bracket: { ...latestRoom.bracket, matchups: mus }, rev: latestRoom.rev + 1 };
+                  const ok = await commitIfRevMatches(roomKey(roomCodeState), latestRoom, updated);
+                  if (ok) fresh = updated;
+                }
+              }
+            }
+
+            if (freshMatch.turnCounter !== turnCounterRef.current) {
+              turnCounterRef.current = freshMatch.turnCounter;
+              setMySubmitted(false);
+              setShowSwitchMenu(false);
+            }
+            setMatch(freshMatch);
+          } else {
+            currentMatchIdRef.current = null;
+            setMatch(null);
+          }
+        }
+      }
+
+      if (cancelled) return;
+      setRoom(fresh);
+      if (fresh.status === "lobby") setScreen("lobby");
+      else if (fresh.status === "drafting") setScreen("draft");
+      else if (fresh.status === "bracket") setScreen("bracket");
+      else if (fresh.status === "over") setScreen("over");
+    };
+    tick();
+    const id = setInterval(tick, 1800);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [screen, roomCodeState, myId]);
+
+  async function createRoom() {
+    if (!myName.trim()) { setError("Enter your name first."); return; }
+    setLoading(true); setError("");
+    try {
+      const code = genCode();
+      const region = REGIONS.find((r) => r.key === selectedRegion) || REGIONS[0];
+      const initial = {
+        code, region: region.key, regionLabel: region.label,
+        hostId: myId, hostName: myName.trim(),
+        players: [{ id: myId, name: myName.trim() }],
+        maxPlayers: 8, teamSize: 4,
+        status: "lobby", teams: null, bracket: null, champion: null,
+        rev: 0, createdAt: Date.now(),
+      };
+      await storageSet(roomKey(code), initial);
+      await storageSet(ACTIVE_ROOM_KEY, { code, name: myName.trim() }, false);
+      setRoomCodeState(code);
+      setRoom(initial);
+      setScreen("lobby");
+    } catch {
+      setError("Couldn't create the room. Try again.");
+    }
+    setLoading(false);
+  }
+
+  async function joinRoom() {
+    if (!myName.trim() || !joinCode.trim()) { setError("Enter your name and a room code."); return; }
+    setLoading(true); setError("");
+    const code = joinCode.trim().toUpperCase();
+    const existing = await storageGet(roomKey(code));
+    if (!existing) { setError("Room not found. Double-check the code."); setLoading(false); return; }
+    const already = existing.players.some((p) => p.id === myId);
+    if (!already) {
+      if (existing.status !== "lobby") { setError("This tournament has already started."); setLoading(false); return; }
+      if (existing.players.length >= existing.maxPlayers) { setError("That room is full (8/8)."); setLoading(false); return; }
+      const updated = { ...existing, players: [...existing.players, { id: myId, name: myName.trim() }], rev: existing.rev + 1 };
+      const ok = await commitIfRevMatches(roomKey(code), existing, updated);
+      if (!ok) { setError("Someone else joined at the same instant — try again."); setLoading(false); return; }
+    }
+    await storageSet(ACTIVE_ROOM_KEY, { code, name: myName.trim() }, false);
+    const latest = await storageGet(roomKey(code));
+    setRoomCodeState(code);
+    setRoom(latest);
+    if (latest.status === "lobby") setScreen("lobby");
+    else if (latest.status === "drafting") setScreen("draft");
+    else if (latest.status === "bracket") setScreen("bracket");
+    else setScreen("over");
+    setLoading(false);
+  }
+
+  async function startTournament() {
+    if (!room || room.hostId !== myId || room.status !== "lobby" || room.players.length < 2) return;
+    setStartingTournament(true); setError("");
+    try {
+      const latest = await storageGet(roomKey(roomCodeState));
+      if (!latest || latest.hostId !== myId || latest.status !== "lobby" || latest.players.length < 2) { setStartingTournament(false); return; }
+      const region = REGIONS.find((r) => r.key === latest.region) || REGIONS[0];
+      const pools = await Promise.all(latest.players.map(async (p) => ({
+        id: p.id,
+        pool: shuffle(await fetchPool(region.range[0], region.range[1], 10)),
+      })));
+      await Promise.all(pools.map(({ id, pool }) => storageSet(draftKeyFor(roomCodeState, id), { pool, picks: [], done: false })));
+      const updated = { ...latest, status: "drafting", rev: latest.rev + 1 };
+      const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
+      if (ok) setRoom(updated);
+      else setError("Couldn't start — try again.");
+    } catch {
+      setError("Couldn't reach the Pokédex network. Try again.");
+    }
+    setStartingTournament(false);
+  }
+
+  async function pickMon(mon) {
+    if (pickLockRef.current) return;
+    pickLockRef.current = true;
+    setPicking(true);
+    try {
+      const latest = await storageGet(draftKeyFor(roomCodeState, myId));
+      if (!latest || latest.done || latest.picks.length >= (room?.teamSize || 4)) return;
+      const newPicks = [...latest.picks, mon];
+      const newPool = shuffle(latest.pool.filter((p) => p.id !== mon.id));
+      const done = newPicks.length >= (room?.teamSize || 4);
+      const updated = { pool: newPool, picks: newPicks, done };
+      await storageSet(draftKeyFor(roomCodeState, myId), updated);
+      setMyDraft(updated);
+    } finally {
+      pickLockRef.current = false;
+      setPicking(false);
+    }
+  }
+
+  async function submitLead(idx) {
+    if (mySubmitted || !match || match.status !== "choose-lead") return;
+    setMySubmitted(true);
+    await storageSet(moveKeyFor(roomCodeState, match.id, myId), { leadIdx: idx });
+  }
+  // A regular turn action: either attack with a move, or voluntarily
+  // swap in a bench Pokémon instead of attacking this turn.
+  async function submitAction(action) {
+    if (mySubmitted || !match || match.status !== "battle" || match.pendingSwitch) return;
+    setMySubmitted(true);
+    setShowSwitchMenu(false);
+    await storageSet(moveKeyFor(roomCodeState, match.id, myId), action);
+  }
+  async function submitAttack(moveIdx) {
+    await submitAction(moveIdx);
+  }
+  async function submitVoluntarySwitch(idx) {
+    await submitAction({ switchIdx: idx });
+  }
+  // A forced switch after your active Pokémon faints (no attack involved).
+  async function submitSwitch(idx) {
+    if (mySubmitted || !match || match.pendingSwitch !== myId) return;
+    setMySubmitted(true);
+    await storageSet(moveKeyFor(roomCodeState, match.id, myId), { switchIdx: idx });
+  }
+
+  function leaveRoom() {
+    storageDelete(ACTIVE_ROOM_KEY, false);
+    setScreen("home"); setRoom(null); setMatch(null); setMyDraft(null);
+    setRoomCodeState(""); setJoinCode(""); setError(""); setMySubmitted(false); setShowSwitchMenu(false);
+    turnCounterRef.current = 0; currentMatchIdRef.current = null;
+  }
+
+  function copyCode() {
+    const shareUrl = `${location.origin}${location.pathname}?join=${roomCodeState}`;
+    navigator.clipboard?.writeText(shareUrl).then(() => {
+      setCopyLabel("Copied!");
+      setTimeout(() => setCopyLabel("Copy link"), 1500);
+    });
+  }
+
+  // If someone opens a shared "?join=CODE" link, prefill the join screen.
+  useEffect(() => {
+    if (!initializing && screen === "home") {
+      const params = new URLSearchParams(location.search);
+      const code = params.get("join");
+      if (code) {
+        setJoinCode(code.toUpperCase());
+        setScreen("join");
+      }
+    }
+  }, [initializing]);
+
+  const bg = { background: "#12141C", minHeight: "100%", fontFamily: "Rubik, sans-serif" };
+  const display = { fontFamily: "'Press Start 2P', monospace" };
+  const panel = { background: "#EFE6D0", color: "#262433", border: "3px solid #262433" };
+
+  const otherPid = match ? (myId === match.p1 ? match.p2 : match.p1) : null;
+  const otherPname = match ? (myId === match.p1 ? match.p2Name : match.p1Name) : "";
+  const myTeam = match?.teams?.[myId];
+  const oppTeam = match?.teams?.[otherPid];
+  const myActive = myTeam?.[match?.activeIdx?.[myId]];
+  const oppActive = oppTeam?.[match?.activeIdx?.[otherPid]];
+
+  return (
+    <div style={bg} className="w-full min-h-full flex flex-col items-center p-3 text-[#EFE6D0]">
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Rubik:wght@400;500;700;900&display=swap');`}</style>
+
+      <h1 style={{ ...display, color: "#E8B23D", fontSize: "12px", lineHeight: 1.6 }} className="mt-2 mb-4 text-center">
+        DRAFT &amp; BATTLE · ONLINE
+      </h1>
+
+      {initializing && (
+        <div className="mt-16 text-center opacity-80 text-sm animate-pulse">Reconnecting…</div>
+      )}
+
+      {!initializing && screen === "home" && (
+        <div className="flex flex-col items-center gap-4 mt-6 w-full max-w-xs">
+          <p className="text-sm opacity-80 text-center">Draft a team from any generation and battle 1–7 friends in a knockout bracket. Share a room code to play.</p>
+          <input
+            value={myName} onChange={(e) => setMyName(e.target.value)} placeholder="Your trainer name"
+            style={{ background: "#EFE6D0", color: "#262433" }} className="w-full rounded-lg px-3 py-2 text-sm"
+          />
+          {error && <div className="text-xs text-[#D64545]">{error}</div>}
+          <button onClick={() => setScreen("create")} style={{ background: "#D64545", ...display, fontSize: "10px" }} className="w-full px-4 py-3 rounded-xl text-white active:scale-95 transition">
+            HOST A ROOM
+          </button>
+          <button onClick={() => setScreen("join")} style={{ background: "#3FA796", ...display, fontSize: "10px" }} className="w-full px-4 py-3 rounded-xl text-white active:scale-95 transition">
+            JOIN A ROOM
+          </button>
+        </div>
+      )}
+
+      {screen === "create" && (
+        <div className="flex flex-col items-center gap-3 w-full max-w-sm">
+          <input
+            value={myName} onChange={(e) => setMyName(e.target.value)} placeholder="Your trainer name"
+            style={{ background: "#EFE6D0", color: "#262433" }} className="w-full rounded-lg px-3 py-2 text-sm"
+          />
+          <div style={{ ...display, fontSize: "10px" }} className="text-[#E8B23D]">CHOOSE A REGION</div>
+          <div className="grid grid-cols-2 gap-2 w-full">
+            {REGIONS.map((r) => (
+              <button
+                key={r.key} onClick={() => setSelectedRegion(r.key)}
+                style={{ background: selectedRegion === r.key ? "#E8B23D" : "#EFE6D0", color: "#262433", border: "3px solid #262433" }}
+                className="rounded-xl p-2 text-left"
+              >
+                <div className="font-bold text-xs">{r.label}</div>
+                <div className="text-[10px] opacity-70">Gen {r.gen}</div>
+              </button>
+            ))}
+          </div>
+          {error && <div className="text-xs text-[#D64545]">{error}</div>}
+          <button onClick={createRoom} disabled={loading} style={{ background: "#D64545", ...display, fontSize: "10px" }} className="w-full px-4 py-3 rounded-xl text-white disabled:opacity-60">
+            {loading ? "SUMMONING…" : "CREATE ROOM"}
+          </button>
+          <button onClick={() => setScreen("home")} className="text-xs opacity-60 underline">back</button>
+        </div>
+      )}
+
+      {screen === "join" && (
+        <div className="flex flex-col items-center gap-3 w-full max-w-xs">
+          <input
+            value={myName} onChange={(e) => setMyName(e.target.value)} placeholder="Your trainer name"
+            style={{ background: "#EFE6D0", color: "#262433" }} className="w-full rounded-lg px-3 py-2 text-sm"
+          />
+          <input
+            value={joinCode} onChange={(e) => setJoinCode(e.target.value.toUpperCase())} placeholder="ROOM CODE"
+            style={{ background: "#EFE6D0", color: "#262433", ...display, fontSize: "11px", letterSpacing: "2px" }}
+            className="w-full rounded-lg px-3 py-3 text-center"
+          />
+          {error && <div className="text-xs text-[#D64545]">{error}</div>}
+          <button onClick={joinRoom} disabled={loading} style={{ background: "#3FA796", ...display, fontSize: "10px" }} className="w-full px-4 py-3 rounded-xl text-white disabled:opacity-60">
+            {loading ? "JOINING…" : "JOIN ROOM"}
+          </button>
+          <button onClick={() => setScreen("home")} className="text-xs opacity-60 underline">back</button>
+        </div>
+      )}
+
+      {screen === "lobby" && room && (
+        <div className="flex flex-col items-center gap-4 mt-6 text-center w-full max-w-xs">
+          <div style={{ ...display, fontSize: "9px" }} className="text-[#3FA796]">ROOM CODE</div>
+          <div style={{ ...display, fontSize: "22px", letterSpacing: "4px", color: "#E8B23D" }}>{roomCodeState}</div>
+          <button onClick={copyCode} style={{ background: "#EFE6D0", color: "#262433" }} className="px-3 py-1 rounded-lg text-xs font-bold">{copyLabel}</button>
+          <p className="text-xs opacity-70 max-w-xs">{room.regionLabel} knockout · 2–8 players · Share the code (or copied link) with friends.</p>
+          <div className="w-full flex flex-col gap-1">
+            {room.players.map((p) => (
+              <div key={p.id} style={panel} className="rounded-lg px-3 py-2 text-left text-sm font-bold">
+                {p.name}{p.id === room.hostId ? " (Host)" : ""}{p.id === myId ? " · You" : ""}
+              </div>
+            ))}
+          </div>
+          <div className="text-xs opacity-60">{room.players.length} / {room.maxPlayers} joined</div>
+          {room.hostId === myId ? (
+            <button
+              onClick={startTournament}
+              disabled={room.players.length < 2 || startingTournament}
+              style={{ background: "#D64545", ...display, fontSize: "10px" }}
+              className="w-full px-4 py-3 rounded-xl text-white disabled:opacity-50"
+            >
+              {startingTournament ? "SUMMONING…" : room.players.length < 2 ? "NEED 2+ PLAYERS" : `START KNOCKOUT (${room.players.length})`}
+            </button>
+          ) : (
+            <div className="animate-pulse text-xs opacity-60">Waiting for host to start…</div>
+          )}
+          {error && <div className="text-xs text-[#D64545]">{error}</div>}
+          <button onClick={leaveRoom} className="text-xs opacity-60 underline">leave</button>
+        </div>
+      )}
+
+      {screen === "draft" && room && (
+        <div className="w-full max-w-md flex flex-col gap-3">
+          <div style={{ ...display, fontSize: "9px" }} className="text-center text-[#3FA796]">DRAFT YOUR TEAM</div>
+          {!myDraft ? (
+            <div className="text-center text-xs opacity-70 py-6 animate-pulse">Summoning your Pokédex…</div>
+          ) : myDraft.done ? (
+            <div className="text-center text-xs opacity-70 py-6">Team locked in! Waiting for other trainers…</div>
+          ) : (
+            <>
+              <div className="text-[10px] text-center opacity-60">{room.regionLabel} · Pick {myDraft.picks.length + 1} of {room.teamSize}</div>
+              <div className="grid grid-cols-2 gap-2">
+                {myDraft.pool.map((mon) => (
+                  <button key={mon.id} onClick={() => pickMon(mon)} disabled={picking}
+                    style={panel} className="rounded-2xl p-2 flex flex-col items-center gap-1 active:scale-95 transition disabled:opacity-60">
+                    <Sprite src={mon.sprites.front} alt={mon.name} />
+                    <div className="font-bold text-xs">{mon.name}</div>
+                    <TierStars tier={mon.tier} />
+                    <div className="flex gap-1">{mon.types.map((t) => <TypeChip key={t} t={t} />)}</div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {myDraft && myDraft.picks.length > 0 && (
+            <div className="flex gap-1 flex-wrap justify-center mt-1">
+              {myDraft.picks.map((m) => <img key={m.id} src={m.sprites.front} style={{ imageRendering: "pixelated" }} className="w-9 h-9" alt={m.name} />)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {screen === "bracket" && room && (
+        match ? (
+          <div className="w-full max-w-md flex flex-col gap-2">
+            <div style={{ ...display, fontSize: "9px" }} className="text-center text-[#E8B23D]">ROUND {room.bracket?.round}</div>
+
+            {match.status === "choose-lead" ? (
+              <div className="flex flex-col gap-3">
+                <div style={{ ...display, fontSize: "10px" }} className="text-center text-[#E8B23D]">CHOOSE YOUR LEAD POKÉMON</div>
+                <p className="text-xs text-center opacity-70">vs {otherPname}</p>
+                {mySubmitted ? (
+                  <div className="text-center text-xs opacity-70 py-4">Lead locked in — waiting for {otherPname}…</div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    {match.teams[myId].map((m, i) => (
+                      <button key={m.id} onClick={() => submitLead(i)} style={panel} className="rounded-2xl p-2 flex flex-col items-center gap-1 active:scale-95 transition">
+                        <Sprite src={m.sprites.front} alt={m.name} />
+                        <div className="font-bold text-xs">{m.name}</div>
+                        <TierStars tier={m.tier} />
+                        <div className="flex gap-1">{m.types.map((t) => <TypeChip key={t} t={t} />)}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : myActive && oppActive ? (
+              <>
+                <div style={panel} className="rounded-2xl p-3 flex items-center justify-between">
+                  <div className="flex-1">
+                    <div className="font-bold text-sm">{oppActive.name} <span className="text-[10px] opacity-60">({otherPname})</span></div>
+                    <div className="flex gap-1 my-1">{oppActive.types.map((t) => <TypeChip key={t} t={t} />)}</div>
+                    <HpBar hp={oppActive.currentHp} maxHp={oppActive.maxHp} />
+                  </div>
+                  <Sprite src={oppActive.sprites.front} alt="opponent" />
+                </div>
+
+                <div style={panel} className="rounded-2xl p-3 flex items-center justify-between">
+                  <Sprite src={myActive.sprites.back} alt="you" />
+                  <div className="flex-1 text-right">
+                    <div className="font-bold text-sm">{myActive.name} <span className="text-[10px] opacity-60">(You)</span></div>
+                    <div className="flex gap-1 my-1 justify-end">{myActive.types.map((t) => <TypeChip key={t} t={t} />)}</div>
+                    <HpBar hp={myActive.currentHp} maxHp={myActive.maxHp} />
+                  </div>
+                </div>
+
+                <div style={{ background: "#0d0e14", border: "3px solid #262433" }} className="rounded-xl p-3 h-24 overflow-y-auto text-xs leading-relaxed">
+                  {(match.log || []).slice(-6).map((l, i) => <div key={i}>{l}</div>)}
+                  <div ref={logEndRef} />
+                </div>
+
+                {match.pendingSwitch === myId && (
+                  mySubmitted ? (
+                    <div className="text-center text-xs opacity-70 py-2">Switch locked in — waiting for {otherPname}…</div>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      <div style={{ ...display, fontSize: "9px" }} className="text-center text-[#D64545]">CHOOSE YOUR NEXT POKÉMON</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {myTeam.map((m, i) => (
+                          <button key={m.id} disabled={m.currentHp <= 0} onClick={() => submitSwitch(i)} style={panel} className="rounded-xl p-2 flex flex-col items-center disabled:opacity-30">
+                            <img src={m.sprites.front} style={{ imageRendering: "pixelated" }} className="w-12 h-12" alt={m.name} />
+                            <div className="text-[10px] font-bold">{m.name}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                )}
+
+                {match.pendingSwitch && match.pendingSwitch !== myId && (
+                  <div className="text-center text-xs opacity-70 py-2">{otherPname} is choosing their next Pokémon…</div>
+                )}
+
+                {!match.pendingSwitch && (
+                  mySubmitted ? (
+                    <div className="text-center text-xs opacity-70 py-2">Locked in — waiting for {otherPname}…</div>
+                  ) : showSwitchMenu ? (
+                    <div className="flex flex-col gap-2">
+                      <div style={{ ...display, fontSize: "9px" }} className="text-center text-[#3FA796]">SWITCH TO…</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {myTeam.map((m, i) => (
+                          <button
+                            key={m.id}
+                            disabled={m.currentHp <= 0 || i === match.activeIdx[myId]}
+                            onClick={() => submitVoluntarySwitch(i)}
+                            style={panel}
+                            className="rounded-xl p-2 flex flex-col items-center disabled:opacity-30"
+                          >
+                            <img src={m.sprites.front} style={{ imageRendering: "pixelated" }} className="w-12 h-12" alt={m.name} />
+                            <div className="text-[10px] font-bold">{m.name}</div>
+                          </button>
+                        ))}
+                      </div>
+                      <button onClick={() => setShowSwitchMenu(false)} className="text-xs opacity-60 underline">back to moves</button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        {myActive.moves.map((m, i) => (
+                          <button key={m.name} onClick={() => submitAttack(i)} style={{ background: TYPE_COLORS[m.type] || "#888" }} className="rounded-xl p-2 text-white text-left active:scale-95 transition">
+                            <div className="font-bold text-xs">{m.name}</div>
+                            <div className="text-[10px] opacity-90">{m.type.toUpperCase()} · PWR {m.power}</div>
+                          </button>
+                        ))}
+                      </div>
+                      {myTeam.some((m, i) => m.currentHp > 0 && i !== match.activeIdx[myId]) && (
+                        <button onClick={() => setShowSwitchMenu(true)} style={{ background: "#262433", ...display, fontSize: "9px" }} className="w-full px-3 py-2 rounded-xl text-[#EFE6D0] active:scale-95 transition">
+                          SWITCH POKÉMON
+                        </button>
+                      )}
+                    </div>
+                  )
+                )}
+
+                <div className="flex gap-1 justify-center mt-1">
+                  {myTeam.map((m, i) => (
+                    <div key={m.id} style={{ opacity: m.currentHp <= 0 ? 0.3 : i === match.activeIdx[myId] ? 1 : 0.7, border: i === match.activeIdx[myId] ? "2px solid #E8B23D" : "2px solid transparent" }} className="rounded-lg p-0.5">
+                      <img src={m.sprites.front} style={{ imageRendering: "pixelated" }} className="w-8 h-8" alt={m.name} />
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="text-center text-xs opacity-70 py-6">Loading match…</div>
+            )}
+          </div>
+        ) : (
+          <BracketOverview room={room} myId={myId} />
+        )
+      )}
+
+      {screen === "over" && room && (
+        <div className="flex flex-col items-center gap-3 mt-10">
+          <div style={{ ...display, fontSize: "13px", color: room.champion === myId ? "#3FA796" : "#E8B23D" }}>
+            {room.champion === myId ? "YOU ARE THE CHAMPION!" : "TOURNAMENT OVER"}
+          </div>
+          <p className="text-xs opacity-70">{nameOf(room, room.champion)} wins the {room.players.length}-player knockout!</p>
+          <button onClick={leaveRoom} style={{ background: "#D64545", ...display, fontSize: "10px" }} className="px-4 py-2 rounded-lg text-white">
+            NEW ROOM
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<PokemonDraftBattleMultiplayer />);
+</script>
+<script>
+  // Babel Standalone's default "react" preset now targets the automatic
+  // JSX runtime (imports from "react/jsx-runtime"), which doesn't exist
+  // as a global when using the classic React/ReactDOM UMD builds above.
+  // Transform manually with the classic runtime so JSX compiles to
+  // React.createElement calls against the global `React`.
+  (function () {
+    const source = document.getElementById("app-source").textContent;
+    try {
+      const { code } = Babel.transform(source, {
+        presets: [["react", { runtime: "classic" }]],
+      });
+      (0, eval)(code);
+    } catch (e) {
+      document.getElementById("root").innerHTML =
+        '<pre style="color:#D64545;background:#12141C;padding:16px;white-space:pre-wrap;">App failed to start:\n' +
+        (e && e.message ? e.message : String(e)) +
+        "</pre>";
+      console.error(e);
+    }
+  })();
+</script>
+</body>
+</html>
