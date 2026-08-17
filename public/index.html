@@ -582,7 +582,7 @@ function Confetti() {
   );
 }
 
-function BracketOverview({ room, myId }) {
+function BracketOverview({ room, myId, onWatch }) {
   const mu = room.bracket?.matchups.find((m) => m.p1 === myId || m.p2 === myId);
   let status = "eliminated";
   if (mu) {
@@ -594,7 +594,7 @@ function BracketOverview({ room, myId }) {
     <div className="w-full max-w-md flex flex-col gap-3 items-center">
       <div style={{ fontFamily: "'Press Start 2P', monospace", fontSize: "10px" }} className="text-[#E8B23D]">ROUND {room.bracket?.round}</div>
       {status === "bye" && <p className="text-xs text-center text-[#3FA796]">You got a bye this round — advancing automatically! Waiting for other matches…</p>}
-      {status === "eliminated" && <p className="text-xs text-center text-[#D64545]">You were eliminated. Watching the rest of the knockout…</p>}
+      {status === "eliminated" && <p className="text-xs text-center text-[#D64545]">You were eliminated. Watch a live match below, or wait for the bracket to progress.</p>}
       {status === "waiting" && <p className="text-xs text-center opacity-70">Loading your match…</p>}
       <div className="w-full flex flex-col gap-1">
         {(room.bracket?.matchups || []).map((m) => (
@@ -602,10 +602,77 @@ function BracketOverview({ room, myId }) {
             <span className="font-bold">
               {nameOf(room, m.p1)} {m.p2 ? `vs ${nameOf(room, m.p2)}` : "(bye)"}
             </span>
-            <span className="opacity-70 whitespace-nowrap">{m.winner ? `→ ${nameOf(room, m.winner)}` : "in progress"}</span>
+            {m.winner ? (
+              <span className="opacity-70 whitespace-nowrap">→ {nameOf(room, m.winner)}</span>
+            ) : m.p2 ? (
+              <button onClick={() => onWatch(m.id)} style={{ background: "#3FA796" }} className="text-white text-[10px] font-bold px-2 py-1 rounded-lg whitespace-nowrap active:scale-95 transition">
+                🔴 WATCH
+              </button>
+            ) : (
+              <span className="opacity-70 whitespace-nowrap">in progress</span>
+            )}
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Read-only live view of a match for players who aren't in it (eliminated,
+// or waiting on a bye) — polls the same match record participants use, but
+// never submits actions or attempts to resolve turns.
+function SpectatorView({ spectatedMatch, onBack }) {
+  const panel = { background: "#EFE6D0", color: "#262433", border: "3px solid #262433" };
+  const display = { fontFamily: "'Press Start 2P', monospace" };
+  if (!spectatedMatch) {
+    return (
+      <div className="w-full max-w-md flex flex-col gap-3 items-center">
+        <div className="text-center text-xs opacity-70 py-6 animate-pulse">Loading match…</div>
+        <button onClick={onBack} className="text-xs opacity-60 underline">back to bracket</button>
+      </div>
+    );
+  }
+  const p1Active = spectatedMatch.teams?.[spectatedMatch.p1]?.[spectatedMatch.activeIdx?.[spectatedMatch.p1]];
+  const p2Active = spectatedMatch.teams?.[spectatedMatch.p2]?.[spectatedMatch.activeIdx?.[spectatedMatch.p2]];
+  return (
+    <div className="w-full max-w-md flex flex-col gap-2">
+      <div style={{ ...display, fontSize: "9px" }} className="text-center text-[#D64545]">
+        🔴 LIVE · {spectatedMatch.p1Name} vs {spectatedMatch.p2Name}
+      </div>
+
+      {spectatedMatch.status === "choose-lead" ? (
+        <div className="text-center text-xs opacity-70 py-6">Both trainers are choosing their lead Pokémon…</div>
+      ) : spectatedMatch.status === "over" ? (
+        <div style={{ ...display, fontSize: "11px", color: "#3FA796" }} className="text-center py-6">
+          {spectatedMatch.winner === spectatedMatch.p1 ? spectatedMatch.p1Name : spectatedMatch.p2Name} won this match!
+        </div>
+      ) : p1Active && p2Active ? (
+        <>
+          <div style={panel} className="rounded-2xl p-3 flex items-center justify-between">
+            <div className="flex-1">
+              <div className="font-bold text-sm">{p1Active.name} <span className="text-[10px] opacity-60">({spectatedMatch.p1Name})</span></div>
+              <div className="flex gap-1 my-1">{p1Active.types.map((t) => <TypeChip key={t} t={t} />)}</div>
+              <HpBar hp={p1Active.currentHp} maxHp={p1Active.maxHp} />
+            </div>
+            <Sprite src={p1Active.sprites.front} alt="p1" />
+          </div>
+          <div style={panel} className="rounded-2xl p-3 flex items-center justify-between">
+            <Sprite src={p2Active.sprites.front} alt="p2" flip />
+            <div className="flex-1 text-right">
+              <div className="font-bold text-sm">{p2Active.name} <span className="text-[10px] opacity-60">({spectatedMatch.p2Name})</span></div>
+              <div className="flex gap-1 my-1 justify-end">{p2Active.types.map((t) => <TypeChip key={t} t={t} />)}</div>
+              <HpBar hp={p2Active.currentHp} maxHp={p2Active.maxHp} />
+            </div>
+          </div>
+          <div style={{ background: "#0d0e14", border: "3px solid #262433" }} className="rounded-xl p-3 h-32 overflow-y-auto text-xs leading-relaxed">
+            {(spectatedMatch.log || []).slice(-10).map((l, i) => <div key={i}>{l}</div>)}
+          </div>
+        </>
+      ) : (
+        <div className="text-center text-xs opacity-70 py-6">Waiting for battle to begin…</div>
+      )}
+
+      <button onClick={onBack} className="text-xs opacity-60 underline text-center">back to bracket</button>
     </div>
   );
 }
@@ -631,6 +698,8 @@ function PokemonDraftBattleMultiplayer() {
   const [shake, setShake] = useState({ mine: false, opp: false });
   const [floatText, setFloatText] = useState({ mine: null, opp: null });
   const [incomingReaction, setIncomingReaction] = useState(null);
+  const [spectateMatchId, setSpectateMatchId] = useState(null);
+  const [spectatedMatch, setSpectatedMatch] = useState(null);
   const turnCounterRef = useRef(0);
   const currentMatchIdRef = useRef(null);
   const pickLockRef = useRef(false);
@@ -866,6 +935,27 @@ function PokemonDraftBattleMultiplayer() {
     return () => { cancelled = true; clearInterval(id); };
   }, [screen, roomCodeState, myId]);
 
+  // A new round means new match ids — any match a spectator was watching
+  // no longer exists, so drop back to the bracket overview.
+  useEffect(() => {
+    setSpectateMatchId(null);
+    setSpectatedMatch(null);
+  }, [room?.bracket?.round]);
+
+  // Spectating is strictly read-only: just poll and display, never submit
+  // actions or attempt to resolve turns for a match that isn't yours.
+  useEffect(() => {
+    if (!spectateMatchId || !roomCodeState) { setSpectatedMatch(null); return; }
+    let cancelled = false;
+    const poll = async () => {
+      const m = await storageGet(matchKey(roomCodeState, spectateMatchId));
+      if (!cancelled) setSpectatedMatch(m);
+    };
+    poll();
+    const id = setInterval(poll, 1800);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [spectateMatchId, roomCodeState]);
+
   async function createRoom() {
     if (!myName.trim()) { setError("Enter your name first."); return; }
     setLoading(true); setError("");
@@ -1008,6 +1098,7 @@ function PokemonDraftBattleMultiplayer() {
     storageDelete(ACTIVE_ROOM_KEY, false);
     setScreen("home"); setRoom(null); setMatch(null); setMyDraft(null);
     setRoomCodeState(""); setJoinCode(""); setError(""); setMySubmitted(false); setShowSwitchMenu(false);
+    setSpectateMatchId(null); setSpectatedMatch(null);
     turnCounterRef.current = 0; currentMatchIdRef.current = null; victoryPlayedRef.current = false;
   }
 
@@ -1386,8 +1477,10 @@ function PokemonDraftBattleMultiplayer() {
               <div className="text-center text-xs opacity-70 py-6">Loading match…</div>
             )}
           </div>
+        ) : spectateMatchId ? (
+          <SpectatorView spectatedMatch={spectatedMatch} onBack={() => setSpectateMatchId(null)} />
         ) : (
-          <BracketOverview room={room} myId={myId} />
+          <BracketOverview room={room} myId={myId} onWatch={setSpectateMatchId} />
         )
       )}
 
