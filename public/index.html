@@ -210,16 +210,23 @@ function randUniqueIds(count, min, max) {
   return [...s];
 }
 
-async function fetchPool(min, max, count) {
-  const ids = randUniqueIds(Math.ceil(count * 1.4), min, max);
-  let mons = (await Promise.all(ids.map((id) => fetchPokemon(id).catch(() => null)))).filter(Boolean);
-  if (mons.length < count) {
-    const more = randUniqueIds(count, min, max).filter((id) => !ids.includes(id));
-    const extra = (await Promise.all(more.map((id) => fetchPokemon(id).catch(() => null)))).filter(Boolean);
-    mons = [...mons, ...extra];
+// excludeIds keeps already-picked Pokémon (this draft round) from
+// reappearing in a later pick's freshly-fetched pool.
+async function fetchPool(min, max, count, excludeIds) {
+  const excluded = new Set(excludeIds || []);
+  const seen = new Set(excluded);
+  let mons = [];
+  let attempts = 0;
+  while (mons.length < count && attempts < 5) {
+    attempts++;
+    const need = count - mons.length;
+    const ids = randUniqueIds(Math.ceil(need * 1.6), min, max).filter((id) => !seen.has(id));
+    ids.forEach((id) => seen.add(id));
+    const fetched = (await Promise.all(ids.map((id) => fetchPokemon(id).catch(() => null)))).filter(Boolean);
+    mons = [...mons, ...fetched];
   }
-  const seen = new Set();
-  mons = mons.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
+  const dedup = new Set();
+  mons = mons.filter((m) => (dedup.has(m.id) ? false : (dedup.add(m.id), true)));
   return mons.slice(0, count);
 }
 
@@ -1071,7 +1078,7 @@ function PokemonDraftBattleMultiplayer() {
       if (!done) {
         try {
           const region = REGIONS.find((r) => r.key === room?.region) || REGIONS[0];
-          newPool = shuffle(await fetchPool(region.range[0], region.range[1], 10));
+          newPool = shuffle(await fetchPool(region.range[0], region.range[1], 10, newPicks.map((p) => p.id)));
         } catch {
           newPool = shuffle(latest.pool.filter((p) => p.id !== mon.id));
         }
