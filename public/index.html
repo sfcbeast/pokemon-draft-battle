@@ -677,23 +677,32 @@ function PokemonDraftBattleMultiplayer() {
       if (!fresh || cancelled) return;
 
       if (fresh.status === "drafting") {
-        const mine = await storageGet(draftKeyFor(roomCodeState, myId));
-        if (mine) setMyDraft(mine);
+        // Every round (including round 1) drafts from a brand-new private
+        // pool, so trainers rebuild their team round to round instead of
+        // running the same 4 Pokémon through the whole knockout.
+        const participants = fresh.draftParticipants || fresh.players.map((p) => p.id);
+        if (participants.includes(myId)) {
+          const mine = await storageGet(draftKeyFor(roomCodeState, myId));
+          if (mine) setMyDraft(mine);
+        } else {
+          setMyDraft(null);
+        }
 
-        const draftStates = await Promise.all(fresh.players.map((p) => storageGet(draftKeyFor(roomCodeState, p.id))));
+        const draftStates = await Promise.all(participants.map((pid) => storageGet(draftKeyFor(roomCodeState, pid))));
         const allDone = draftStates.length > 0 && draftStates.every((d) => d && d.done);
         if (allDone) {
           const latest = await storageGet(roomKey(roomCodeState));
           if (latest && latest.status === "drafting" && latest.rev === fresh.rev) {
-            const teams = {};
-            latest.players.forEach((p, i) => {
-              teams[p.id] = draftStates[i].picks.map((m) => ({ ...m, currentHp: m.maxHp }));
+            const teams = { ...(latest.teams || {}) };
+            participants.forEach((pid, i) => {
+              teams[pid] = draftStates[i].picks.map((m) => ({ ...m, currentHp: m.maxHp }));
             });
-            const matchups = generateRound(latest.players.map((p) => p.id), 1);
-            const updated = { ...latest, status: "bracket", teams, bracket: { round: 1, matchups }, rev: latest.rev + 1 };
+            const roundNum = latest.draftRound || 1;
+            const matchups = generateRound(participants, roundNum);
+            const updated = { ...latest, status: "bracket", teams, bracket: { round: roundNum, matchups }, rev: latest.rev + 1 };
             const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
             if (ok) {
-              await Promise.all(matchups.filter((m) => m.p2).map((mu) => storageSet(matchKey(roomCodeState, mu.id), buildFreshMatch(latest, mu))));
+              await Promise.all(matchups.filter((m) => m.p2).map((mu) => storageSet(matchKey(roomCodeState, mu.id), buildFreshMatch(updated, mu))));
               fresh = updated;
             }
           }
@@ -709,12 +718,17 @@ function PokemonDraftBattleMultiplayer() {
               const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
               if (ok) fresh = updated;
             } else {
+              // Survivors re-draft a fresh team before the next round pairs up.
               const nextRound = latest.bracket.round + 1;
-              const matchups = generateRound(winners, nextRound);
-              const updated = { ...latest, bracket: { round: nextRound, matchups }, rev: latest.rev + 1 };
+              const region = REGIONS.find((r) => r.key === latest.region) || REGIONS[0];
+              const pools = await Promise.all(winners.map(async (pid) => ({
+                id: pid,
+                pool: shuffle(await fetchPool(region.range[0], region.range[1], 10)),
+              })));
+              const updated = { ...latest, status: "drafting", draftParticipants: winners, draftRound: nextRound, rev: latest.rev + 1 };
               const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
               if (ok) {
-                await Promise.all(matchups.filter((m) => m.p2).map((mu) => storageSet(matchKey(roomCodeState, mu.id), buildFreshMatch(latest, mu))));
+                await Promise.all(pools.map(({ id, pool }) => storageSet(draftKeyFor(roomCodeState, id), { pool, picks: [], done: false })));
                 fresh = updated;
               }
             }
@@ -849,6 +863,7 @@ function PokemonDraftBattleMultiplayer() {
         players: [{ id: myId, name: myName.trim() }],
         maxPlayers: 8, teamSize: 4,
         status: "lobby", teams: null, bracket: null, champion: null,
+        draftParticipants: null, draftRound: 0,
         rev: 0, createdAt: Date.now(),
       };
       await storageSet(roomKey(code), initial);
@@ -899,7 +914,7 @@ function PokemonDraftBattleMultiplayer() {
         pool: shuffle(await fetchPool(region.range[0], region.range[1], 10)),
       })));
       await Promise.all(pools.map(({ id, pool }) => storageSet(draftKeyFor(roomCodeState, id), { pool, picks: [], done: false })));
-      const updated = { ...latest, status: "drafting", rev: latest.rev + 1 };
+      const updated = { ...latest, status: "drafting", draftParticipants: latest.players.map((p) => p.id), draftRound: 1, rev: latest.rev + 1 };
       const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
       if (ok) setRoom(updated);
       else setError("Couldn't start — try again.");
@@ -1149,8 +1164,12 @@ function PokemonDraftBattleMultiplayer() {
 
       {screen === "draft" && room && (
         <div className="w-full max-w-md flex flex-col gap-3">
-          <div style={{ ...display, fontSize: "9px" }} className="text-center text-[#3FA796]">DRAFT YOUR TEAM</div>
-          {!myDraft ? (
+          <div style={{ ...display, fontSize: "9px" }} className="text-center text-[#3FA796]">
+            DRAFT YOUR TEAM{room.draftRound ? ` · ROUND ${room.draftRound}` : ""}
+          </div>
+          {room.draftParticipants && !room.draftParticipants.includes(myId) ? (
+            <div className="text-center text-xs opacity-70 py-10">You were eliminated — spectating while the remaining trainers draft for round {room.draftRound}…</div>
+          ) : !myDraft ? (
             <div className="text-center text-xs opacity-70 py-6 animate-pulse">Summoning your Pokédex…</div>
           ) : myDraft.done ? (
             <div className="text-center text-xs opacity-70 py-6">Team locked in! Waiting for other trainers…</div>
