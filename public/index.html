@@ -592,6 +592,61 @@ function SmallSprite({ src, alt, className }) {
   );
 }
 
+// Derives a type's full effectiveness profile from CHART: which types it
+// hits hard (2x), which resist it (0.5x), and which are immune (0x).
+// Anything not listed is average (1x) — omission carries that meaning.
+function typeRelations(t) {
+  const strong = [], weak = [], immune = [];
+  Object.keys(TYPE_COLORS).forEach((def) => {
+    const v = CHART[t]?.[def];
+    if (v === 2) strong.push(def);
+    else if (v === 0) immune.push(def);
+    else if (v === 0.5) weak.push(def);
+  });
+  return { strong, weak, immune };
+}
+
+function TypeChart({ onClose }) {
+  const types = Object.keys(TYPE_COLORS);
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(18,20,28,0.97)", zIndex: 70, overflowY: "auto" }} className="p-4">
+      <div className="max-w-md mx-auto flex flex-col gap-4 pb-10">
+        <div className="flex items-center justify-between sticky top-0 pt-1 pb-2" style={{ background: "rgba(18,20,28,0.97)" }}>
+          <div style={{ fontFamily: "'Press Start 2P', monospace", fontSize: "11px" }} className="text-[#E8B23D]">TYPE CHART</div>
+          <button onClick={onClose} style={{ background: "#D64545" }} className="text-white text-xs font-bold px-3 py-1.5 rounded-lg active:scale-95 transition">CLOSE</button>
+        </div>
+        <p className="text-xs opacity-70 -mt-2">What each type does extra, reduced, or zero damage against. Anything not listed is average (1×) damage.</p>
+        <div className="flex flex-col gap-2">
+          {types.map((t) => {
+            const { strong, weak, immune } = typeRelations(t);
+            return (
+              <div key={t} style={{ background: "#EFE6D0", color: "#262433", border: "3px solid #262433" }} className="rounded-xl p-3">
+                <div className="mb-2"><TypeChip t={t} /></div>
+                <div className="text-xs flex flex-col gap-1.5">
+                  <div className="flex flex-wrap gap-1 items-center">
+                    <span className="font-bold text-[#3FA796] mr-1">Strong vs</span>
+                    {strong.length ? strong.map((d) => <TypeChip key={d} t={d} />) : <span className="opacity-50">none</span>}
+                  </div>
+                  <div className="flex flex-wrap gap-1 items-center">
+                    <span className="font-bold text-[#D64545] mr-1">Weak vs</span>
+                    {weak.length ? weak.map((d) => <TypeChip key={d} t={d} />) : <span className="opacity-50">none</span>}
+                  </div>
+                  {immune.length > 0 && (
+                    <div className="flex flex-wrap gap-1 items-center">
+                      <span className="font-bold mr-1" style={{ color: "#4A4361" }}>No effect vs</span>
+                      {immune.map((d) => <TypeChip key={d} t={d} />)}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Confetti() {
   const colors = ["#D64545", "#E8B23D", "#3FA796", "#EFE6D0", "#A98FF3"];
   const pieces = Array.from({ length: 44 }, (_, i) => i);
@@ -732,6 +787,7 @@ function PokemonDraftBattleMultiplayer() {
   const [showSwitchMenu, setShowSwitchMenu] = useState(false);
   const [picking, setPicking] = useState(false);
   const [copyLabel, setCopyLabel] = useState("Copy code");
+  const [showTypeChart, setShowTypeChart] = useState(false);
   const [shake, setShake] = useState({ mine: false, opp: false });
   const [floatText, setFloatText] = useState({ mine: null, opp: null });
   const [incomingReaction, setIncomingReaction] = useState(null);
@@ -1240,9 +1296,21 @@ function PokemonDraftBattleMultiplayer() {
     <div style={bg} className="w-full min-h-full flex flex-col items-center p-3 text-[#EFE6D0]">
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Rubik:wght@400;500;700;900&display=swap');`}</style>
 
-      <h1 style={{ ...display, color: "#E8B23D", fontSize: "12px", lineHeight: 1.6 }} className="mt-2 mb-4 text-center">
-        DRAFT &amp; BATTLE · ONLINE
-      </h1>
+      {showTypeChart && <TypeChart onClose={() => setShowTypeChart(false)} />}
+
+      <div className="w-full max-w-md flex items-center justify-between mt-2 mb-2">
+        <div style={{ width: 74 }} />
+        <h1 style={{ ...display, color: "#E8B23D", fontSize: "12px", lineHeight: 1.6 }} className="text-center">
+          DRAFT &amp; BATTLE · ONLINE
+        </h1>
+        <button
+          onClick={() => setShowTypeChart(true)}
+          style={{ background: "#EFE6D0", color: "#262433" }}
+          className="text-[10px] font-bold px-2 py-1.5 rounded-lg active:scale-95 transition whitespace-nowrap"
+        >
+          📖 Types
+        </button>
+      </div>
 
       {initializing && (
         <div className="mt-16 text-center opacity-80 text-sm animate-pulse">Reconnecting…</div>
