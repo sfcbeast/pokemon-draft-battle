@@ -580,11 +580,17 @@ function LegendaryBadge() {
   );
 }
 function HpBar({ hp, maxHp }) {
-  const pct = Math.max(0, (hp / maxHp) * 100);
+  const clampedHp = Math.max(0, hp);
+  const pct = Math.max(0, (clampedHp / maxHp) * 100);
   const color = pct > 50 ? "#3FA796" : pct > 20 ? "#E8B23D" : "#D64545";
   return (
-    <div style={{ background: "#1c1e2a", border: "2px solid #262433" }} className="w-full h-3 rounded-full overflow-hidden">
-      <div style={{ width: `${pct}%`, background: color, transition: "width 0.4s ease" }} className="h-full" />
+    <div className="w-full">
+      <div style={{ background: "#1c1e2a", border: "2px solid #262433" }} className="w-full h-3 rounded-full overflow-hidden">
+        <div style={{ width: `${pct}%`, background: color, transition: "width 0.4s ease" }} className="h-full" />
+      </div>
+      <div style={{ color, fontVariantNumeric: "tabular-nums" }} className="text-[10px] font-bold mt-0.5">
+        {clampedHp} / {maxHp} HP
+      </div>
     </div>
   );
 }
