@@ -62,25 +62,32 @@ const TYPE_COLORS = {
 // Pokémon can roll is gated by its base stat total (see TIER_FOR_BST) so a
 // weak basic like Magikarp can only ever get the weak tier, never the
 // type's strongest move.
+// Tier-3 power is kept within an ~80-90 band across types for balance,
+// except the two signature 100-power "ultimates" (Solar Beam, Earthquake)
+// which trade extra power for a cooldown — see `cooldown` below, enforced
+// in resolveTurn and the move-select UI. A few moves also carry a single-
+// turn `effect` (drain heals the user, recoil hurts them, flinch can skip
+// the opponent's action if this move goes first) — all resolved inline
+// during the same turn, no persistent status tracking required.
 const TYPE_MOVES = {
   normal: [{ name: "Quick Attack", power: 40 }, { name: "Body Slam", power: 65 }, { name: "Hyper Fang", power: 80 }],
   fire: [{ name: "Ember", power: 45 }, { name: "Flame Wheel", power: 65 }, { name: "Flamethrower", power: 90 }],
   water: [{ name: "Water Gun", power: 45 }, { name: "Aqua Tail", power: 65 }, { name: "Surf", power: 90 }],
-  grass: [{ name: "Vine Whip", power: 45 }, { name: "Razor Leaf", power: 65 }, { name: "Solar Beam", power: 100 }],
+  grass: [{ name: "Vine Whip", power: 45 }, { name: "Razor Leaf", power: 65 }, { name: "Solar Beam", power: 100, cooldown: 1 }],
   electric: [{ name: "Spark", power: 45 }, { name: "Discharge", power: 65 }, { name: "Thunderbolt", power: 90 }],
   ice: [{ name: "Ice Shard", power: 45 }, { name: "Aurora Beam", power: 65 }, { name: "Ice Beam", power: 90 }],
-  fighting: [{ name: "Karate Chop", power: 50 }, { name: "Brick Break", power: 65 }, { name: "Submission", power: 85 }],
+  fighting: [{ name: "Karate Chop", power: 50 }, { name: "Brick Break", power: 65 }, { name: "Submission", power: 85, effect: { type: "recoil", amount: 0.25 } }],
   poison: [{ name: "Poison Sting", power: 40 }, { name: "Sludge", power: 65 }, { name: "Sludge Bomb", power: 80 }],
-  ground: [{ name: "Mud Slap", power: 40 }, { name: "Bulldoze", power: 65 }, { name: "Earthquake", power: 100 }],
-  flying: [{ name: "Gust", power: 45 }, { name: "Air Cutter", power: 60 }, { name: "Aerial Ace", power: 75 }],
+  ground: [{ name: "Mud Slap", power: 40 }, { name: "Bulldoze", power: 65 }, { name: "Earthquake", power: 100, cooldown: 1 }],
+  flying: [{ name: "Gust", power: 45 }, { name: "Air Cutter", power: 60 }, { name: "Aerial Ace", power: 80 }],
   psychic: [{ name: "Confusion", power: 50 }, { name: "Psybeam", power: 65 }, { name: "Psychic", power: 90 }],
-  bug: [{ name: "Bug Bite", power: 50 }, { name: "X-Scissor", power: 70 }, { name: "Megahorn", power: 95 }],
-  rock: [{ name: "Rock Throw", power: 50 }, { name: "Rock Tomb", power: 65 }, { name: "Rock Slide", power: 80 }],
+  bug: [{ name: "Bug Bite", power: 50 }, { name: "X-Scissor", power: 70 }, { name: "Megahorn", power: 90 }],
+  rock: [{ name: "Rock Throw", power: 50 }, { name: "Rock Tomb", power: 65 }, { name: "Rock Slide", power: 80, effect: { type: "flinch", chance: 0.3 } }],
   ghost: [{ name: "Lick", power: 40 }, { name: "Shadow Claw", power: 65 }, { name: "Shadow Ball", power: 85 }],
   dragon: [{ name: "Dragon Breath", power: 55 }, { name: "Twister", power: 65 }, { name: "Dragon Claw", power: 85 }],
   dark: [{ name: "Bite", power: 55 }, { name: "Snarl", power: 65 }, { name: "Crunch", power: 85 }],
   steel: [{ name: "Metal Claw", power: 50 }, { name: "Steel Wing", power: 65 }, { name: "Iron Head", power: 85 }],
-  fairy: [{ name: "Fairy Wind", power: 45 }, { name: "Draining Kiss", power: 65 }, { name: "Moonblast", power: 90 }],
+  fairy: [{ name: "Fairy Wind", power: 45 }, { name: "Draining Kiss", power: 65, effect: { type: "drain", amount: 0.5 } }, { name: "Moonblast", power: 90 }],
 };
 
 // Base stat total thresholds separating weak basics (e.g. Magikarp, bst
@@ -275,17 +282,25 @@ function resolveTurn(match, p1Action, p2Action) {
   const p2Mon = match.teams[p2][p2Idx];
   let hp1 = p1Mon.currentHp, hp2 = p2Mon.currentHp;
 
+  const p1MoveIdx = !p1Switch && typeof p1Action === "number" ? p1Action : null;
+  const p2MoveIdx = !p2Switch && typeof p2Action === "number" ? p2Action : null;
   const steps = [];
-  if (!p1Switch && typeof p1Action === "number") steps.push({ side: "p1", move: p1Mon.moves[p1Action] });
-  if (!p2Switch && typeof p2Action === "number") steps.push({ side: "p2", move: p2Mon.moves[p2Action] });
+  if (p1MoveIdx !== null) steps.push({ side: "p1", move: p1Mon.moves[p1MoveIdx] });
+  if (p2MoveIdx !== null) steps.push({ side: "p2", move: p2Mon.moves[p2MoveIdx] });
   if (steps.length === 2) {
     const p1First = p1Mon.stats.speed === p2Mon.stats.speed ? Math.random() < 0.5 : p1Mon.stats.speed > p2Mon.stats.speed;
     if (!p1First) steps.reverse();
   }
 
+  let flinchedSide = null;
   for (const step of steps) {
     if (step.side === "p1" && hp1 <= 0) continue;
     if (step.side === "p2" && hp2 <= 0) continue;
+    if (flinchedSide === step.side) {
+      const flinchedName = step.side === "p1" ? p1Mon.name : p2Mon.name;
+      newLog.push(`${flinchedName} flinched and couldn't move!`);
+      continue;
+    }
     const atk = step.side === "p1" ? p1Mon : p2Mon;
     const def = step.side === "p1" ? p2Mon : p1Mon;
     const atkName = step.side === "p1" ? match.p1Name : match.p2Name;
@@ -297,12 +312,38 @@ function resolveTurn(match, p1Action, p2Action) {
     else if (eff < 1) newLog.push("It's not very effective...");
     if (step.side === "p1") hp2 = Math.max(0, hp2 - dmg);
     else hp1 = Math.max(0, hp1 - dmg);
+
+    // Single-turn secondary effects — resolved inline, no persistent
+    // status tracking needed. Skipped entirely if the move had no effect.
+    if (eff > 0 && step.move.effect) {
+      const { type, amount, chance } = step.move.effect;
+      if (type === "drain") {
+        const heal = Math.max(1, Math.round(dmg * amount));
+        if (step.side === "p1") hp1 = Math.min(p1Mon.maxHp, hp1 + heal);
+        else hp2 = Math.min(p2Mon.maxHp, hp2 + heal);
+        newLog.push(`${atk.name} drained health!`);
+      } else if (type === "recoil") {
+        const recoil = Math.max(1, Math.round(dmg * amount));
+        if (step.side === "p1") hp1 = Math.max(0, hp1 - recoil);
+        else hp2 = Math.max(0, hp2 - recoil);
+        newLog.push(`${atk.name} is hit by recoil!`);
+      } else if (type === "flinch" && Math.random() < chance) {
+        flinchedSide = step.side === "p1" ? "p2" : "p1";
+      }
+    }
   }
   if (hp2 <= 0) newLog.push(`${p2Mon.name} fainted!`);
   if (hp1 <= 0) newLog.push(`${p1Mon.name} fainted!`);
 
-  const newP1Team = match.teams[p1].map((m, i) => (i === p1Idx ? { ...m, currentHp: hp1 } : m));
-  const newP2Team = match.teams[p2].map((m, i) => (i === p2Idx ? { ...m, currentHp: hp2 } : m));
+  // Cooldowns only tick for the active Pokémon: the move just used gets
+  // set to its full cooldown, every other move on that Pokémon counts
+  // down by one. Benched Pokémon are untouched, so cooldowns pause while
+  // switched out and resume when that Pokémon comes back in.
+  const tickCooldowns = (m, usedIdx) =>
+    (m.cooldowns || m.moves.map(() => 0)).map((cd, mi) => (mi === usedIdx ? (m.moves[mi].cooldown || 0) : Math.max(0, cd - 1)));
+
+  const newP1Team = match.teams[p1].map((m, i) => (i === p1Idx ? { ...m, currentHp: hp1, cooldowns: tickCooldowns(m, p1MoveIdx) } : m));
+  const newP2Team = match.teams[p2].map((m, i) => (i === p2Idx ? { ...m, currentHp: hp2, cooldowns: tickCooldowns(m, p2MoveIdx) } : m));
   const p1Alive = newP1Team.some((m) => m.currentHp > 0);
   const p2Alive = newP2Team.some((m) => m.currentHp > 0);
 
@@ -373,8 +414,8 @@ function buildFreshMatch(room, mu) {
     id: mu.id, p1, p2,
     p1Name: nameOf(room, p1), p2Name: nameOf(room, p2),
     teams: {
-      [p1]: room.teams[p1].map((m) => ({ ...m, currentHp: m.maxHp })),
-      [p2]: room.teams[p2].map((m) => ({ ...m, currentHp: m.maxHp })),
+      [p1]: room.teams[p1].map((m) => ({ ...m, currentHp: m.maxHp, cooldowns: m.moves.map(() => 0) })),
+      [p2]: room.teams[p2].map((m) => ({ ...m, currentHp: m.maxHp, cooldowns: m.moves.map(() => 0) })),
     },
     activeIdx: { [p1]: null, [p2]: null },
     status: "choose-lead",
@@ -1188,6 +1229,7 @@ function PokemonDraftBattleMultiplayer() {
   // swap in a bench Pokémon instead of attacking this turn.
   async function submitAction(action) {
     if (mySubmitted || !match || match.status !== "battle" || match.pendingSwitch) return;
+    if (typeof action === "number" && (myActive?.cooldowns?.[action] || 0) > 0) return;
     playSfx("lock");
     setMySubmitted(true);
     setShowSwitchMenu(false);
@@ -1588,12 +1630,19 @@ function PokemonDraftBattleMultiplayer() {
                   ) : (
                     <div className="flex flex-col gap-2">
                       <div className="grid grid-cols-2 gap-2">
-                        {myActive.moves.map((m, i) => (
-                          <button key={m.name} onClick={() => submitAttack(i)} style={{ background: TYPE_COLORS[m.type] || "#888" }} className="rounded-xl p-2 text-white text-left active:scale-95 transition">
-                            <div className="font-bold text-xs">{m.name}</div>
-                            <div className="text-[10px] opacity-90">{m.type.toUpperCase()} · PWR {m.power}</div>
-                          </button>
-                        ))}
+                        {myActive.moves.map((m, i) => {
+                          const onCooldown = (myActive.cooldowns?.[i] || 0) > 0;
+                          return (
+                            <button
+                              key={m.name} onClick={() => submitAttack(i)} disabled={onCooldown}
+                              style={{ background: TYPE_COLORS[m.type] || "#888" }}
+                              className="rounded-xl p-2 text-white text-left active:scale-95 transition disabled:opacity-40"
+                            >
+                              <div className="font-bold text-xs">{m.name}</div>
+                              <div className="text-[10px] opacity-90">{onCooldown ? "RECHARGING…" : `${m.type.toUpperCase()} · PWR ${m.power}`}</div>
+                            </button>
+                          );
+                        })}
                       </div>
                       {myTeam.some((m, i) => m.currentHp > 0 && i !== match.activeIdx[myId]) && (
                         <button onClick={() => setShowSwitchMenu(true)} style={{ background: "#262433", ...display, fontSize: "9px" }} className="w-full px-3 py-2 rounded-xl text-[#EFE6D0] active:scale-95 transition">
