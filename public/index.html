@@ -195,12 +195,21 @@ async function fetchPokemon(id) {
   const bst = data.stats.reduce((sum, s) => sum + s.base_stat, 0);
   const tier = tierForBst(bst);
   const maxHp = statMap.hp * 3;
+  // Gen 1-5 (roughly id <= 649) have genuine animated battle sprites from
+  // Black/White; anything newer falls back to the static PNG already
+  // fetched above — same PokeAPI sprite repo either way, no new source.
+  const animated = data.sprites.versions?.["generation-v"]?.["black-white"]?.animated;
   return {
     id: data.id,
     name: prettyName(data.name),
     types,
     stats: { hp: statMap.hp, attack: statMap.attack, defense: statMap.defense, speed: statMap.speed },
-    sprites: { front: data.sprites.front_default, back: data.sprites.back_default || data.sprites.front_default },
+    sprites: {
+      front: animated?.front_default || data.sprites.front_default,
+      back: animated?.back_default || data.sprites.back_default || data.sprites.front_default,
+      staticFront: data.sprites.front_default,
+      staticBack: data.sprites.back_default || data.sprites.front_default,
+    },
     moves: buildMoveset(types, tier),
     bst, tier,
     legendary: LEGENDARY_IDS.has(data.id),
@@ -600,26 +609,35 @@ function HpBar({ hp, maxHp }) {
 // pool renders. Retrying with backoff (remounting via `key` to force a
 // fresh request) clears up almost all of these without the player ever
 // seeing a broken-image icon.
-function useResilientImg(src, maxAttempts) {
+// Retries the primary src (typically an animated GIF) with backoff; once
+// exhausted, falls back to a static image (e.g. the regular PNG sprite)
+// before finally giving up. Covers both "CDN burst rate-limited" and
+// "this Pokémon has no animated sprite for some other reason" cases.
+function useResilientImg(src, fallbackSrc, maxAttempts) {
   const [attempt, setAttempt] = useState(0);
+  const [usingFallback, setUsingFallback] = useState(false);
   const [failed, setFailed] = useState(false);
-  useEffect(() => { setAttempt(0); setFailed(false); }, [src]);
+  useEffect(() => { setAttempt(0); setUsingFallback(false); setFailed(false); }, [src, fallbackSrc]);
   const onError = () => {
     if (attempt < (maxAttempts || 3)) {
       setTimeout(() => setAttempt((a) => a + 1), 500 * (attempt + 1));
+    } else if (fallbackSrc && fallbackSrc !== src && !usingFallback) {
+      setUsingFallback(true);
+      setAttempt(0);
     } else {
       setFailed(true);
     }
   };
-  return { attempt, failed, onError };
+  const currentSrc = usingFallback ? fallbackSrc : src;
+  return { attempt, failed, onError, currentSrc };
 }
 
-function Sprite({ src, alt, flip }) {
-  const { attempt, failed, onError } = useResilientImg(src);
-  return src && !failed ? (
+function Sprite({ src, fallbackSrc, alt, flip }) {
+  const { attempt, failed, onError, currentSrc } = useResilientImg(src, fallbackSrc);
+  return currentSrc && !failed ? (
     <img
-      key={attempt}
-      src={src}
+      key={`${currentSrc}-${attempt}`}
+      src={currentSrc}
       alt={alt}
       onError={onError}
       style={{ imageRendering: "pixelated", transform: flip ? "scaleX(-1)" : "none" }}
@@ -630,10 +648,10 @@ function Sprite({ src, alt, flip }) {
   );
 }
 
-function SmallSprite({ src, alt, className }) {
-  const { attempt, failed, onError } = useResilientImg(src);
-  return src && !failed ? (
-    <img key={attempt} src={src} alt={alt} onError={onError} style={{ imageRendering: "pixelated" }} className={className} />
+function SmallSprite({ src, fallbackSrc, alt, className }) {
+  const { attempt, failed, onError, currentSrc } = useResilientImg(src, fallbackSrc);
+  return currentSrc && !failed ? (
+    <img key={`${currentSrc}-${attempt}`} src={currentSrc} alt={alt} onError={onError} style={{ imageRendering: "pixelated" }} className={className} />
   ) : (
     <div className={`${className} flex items-center justify-center text-lg`}>❓</div>
   );
@@ -793,10 +811,10 @@ function SpectatorView({ spectatedMatch, onBack }) {
               <div className="flex gap-1 my-1">{p1Active.types.map((t) => <TypeChip key={t} t={t} />)}</div>
               <HpBar hp={p1Active.currentHp} maxHp={p1Active.maxHp} />
             </div>
-            <Sprite src={p1Active.sprites.front} alt="p1" />
+            <Sprite src={p1Active.sprites.front} fallbackSrc={p1Active.sprites.staticFront} alt="p1" />
           </div>
           <div style={panel} className="rounded-2xl p-3 flex items-center justify-between">
-            <Sprite src={p2Active.sprites.front} alt="p2" flip />
+            <Sprite src={p2Active.sprites.front} fallbackSrc={p2Active.sprites.staticFront} alt="p2" flip />
             <div className="flex-1 text-right">
               <div className="font-bold text-sm">{p2Active.name} <span className="text-[10px] opacity-60">({spectatedMatch.p2Name})</span></div>
               <div className="flex gap-1 my-1 justify-end">{p2Active.types.map((t) => <TypeChip key={t} t={t} />)}</div>
@@ -1482,7 +1500,7 @@ function PokemonDraftBattleMultiplayer() {
                   return (
                     <button key={mon.id} onClick={() => pickMon(mon)} disabled={picking || legendaryCapped}
                       style={panel} className="rounded-2xl p-2 flex flex-col items-center gap-1 active:scale-95 transition disabled:opacity-60">
-                      <Sprite src={mon.sprites.front} alt={mon.name} />
+                      <Sprite src={mon.sprites.front} fallbackSrc={mon.sprites.staticFront} alt={mon.name} />
                       <div className="font-bold text-xs">{mon.name}</div>
                       <TierStars tier={mon.tier} />
                       {mon.legendary && <LegendaryBadge />}
@@ -1496,7 +1514,7 @@ function PokemonDraftBattleMultiplayer() {
           )}
           {myDraft && myDraft.picks.length > 0 && (
             <div className="flex gap-1 flex-wrap justify-center mt-1">
-              {myDraft.picks.map((m) => <SmallSprite key={m.id} src={m.sprites.front} alt={m.name} className="w-9 h-9" />)}
+              {myDraft.picks.map((m) => <SmallSprite key={m.id} src={m.sprites.front} fallbackSrc={m.sprites.staticFront} alt={m.name} className="w-9 h-9" />)}
             </div>
           )}
         </div>
@@ -1517,7 +1535,7 @@ function PokemonDraftBattleMultiplayer() {
                   <div className="grid grid-cols-2 gap-2">
                     {match.teams[myId].map((m, i) => (
                       <button key={m.id} onClick={() => submitLead(i)} style={panel} className="rounded-2xl p-2 flex flex-col items-center gap-1 active:scale-95 transition">
-                        <Sprite src={m.sprites.front} alt={m.name} />
+                        <Sprite src={m.sprites.front} fallbackSrc={m.sprites.staticFront} alt={m.name} />
                         <div className="font-bold text-xs">{m.name}</div>
                         <TierStars tier={m.tier} />
                         <div className="flex gap-1">{m.types.map((t) => <TypeChip key={t} t={t} />)}</div>
@@ -1545,7 +1563,7 @@ function PokemonDraftBattleMultiplayer() {
                     <HpBar hp={oppActive.currentHp} maxHp={oppActive.maxHp} />
                   </div>
                   <div style={{ position: "relative" }} className={shake.opp ? "pkmn-flash-anim" : ""}>
-                    <Sprite src={oppActive.sprites.front} alt="opponent" />
+                    <Sprite src={oppActive.sprites.front} fallbackSrc={oppActive.sprites.staticFront} alt="opponent" />
                     {floatText.opp && (
                       <div
                         key={floatText.opp.key}
@@ -1559,7 +1577,7 @@ function PokemonDraftBattleMultiplayer() {
 
                 <div style={panel} className={`rounded-2xl p-3 flex items-center justify-between ${shake.mine ? "pkmn-shake-anim" : ""}`}>
                   <div style={{ position: "relative" }} className={shake.mine ? "pkmn-flash-anim" : ""}>
-                    <Sprite src={myActive.sprites.back} alt="you" />
+                    <Sprite src={myActive.sprites.back} fallbackSrc={myActive.sprites.staticBack} alt="you" />
                     {floatText.mine && (
                       <div
                         key={floatText.mine.key}
@@ -1598,7 +1616,7 @@ function PokemonDraftBattleMultiplayer() {
                       <div className="grid grid-cols-3 gap-2">
                         {myTeam.map((m, i) => (
                           <button key={m.id} disabled={m.currentHp <= 0} onClick={() => submitSwitch(i)} style={panel} className="rounded-xl p-2 flex flex-col items-center disabled:opacity-30">
-                            <SmallSprite src={m.sprites.front} alt={m.name} className="w-12 h-12" />
+                            <SmallSprite src={m.sprites.front} fallbackSrc={m.sprites.staticFront} alt={m.name} className="w-12 h-12" />
                             <div className="text-[10px] font-bold">{m.name}</div>
                           </button>
                         ))}
@@ -1626,7 +1644,7 @@ function PokemonDraftBattleMultiplayer() {
                             style={panel}
                             className="rounded-xl p-2 flex flex-col items-center disabled:opacity-30"
                           >
-                            <SmallSprite src={m.sprites.front} alt={m.name} className="w-12 h-12" />
+                            <SmallSprite src={m.sprites.front} fallbackSrc={m.sprites.staticFront} alt={m.name} className="w-12 h-12" />
                             <div className="text-[10px] font-bold">{m.name}</div>
                           </button>
                         ))}
@@ -1662,7 +1680,7 @@ function PokemonDraftBattleMultiplayer() {
                 <div className="flex gap-1 justify-center mt-1">
                   {myTeam.map((m, i) => (
                     <div key={m.id} style={{ opacity: m.currentHp <= 0 ? 0.3 : i === match.activeIdx[myId] ? 1 : 0.7, border: i === match.activeIdx[myId] ? "2px solid #E8B23D" : "2px solid transparent" }} className="rounded-lg p-0.5">
-                      <SmallSprite src={m.sprites.front} alt={m.name} className="w-8 h-8" />
+                      <SmallSprite src={m.sprites.front} fallbackSrc={m.sprites.staticFront} alt={m.name} className="w-8 h-8" />
                     </div>
                   ))}
                 </div>
