@@ -392,11 +392,18 @@ function nextPow2(n) {
 // same room — otherwise round 1's match ids would repeat verbatim every
 // new tournament, and a player's leftover local ref/state from the last
 // tournament could look like it's still "the same match" and never reset.
-function generateRound(playerIds, roundNum, season) {
-  const shuffled = shuffle(playerIds);
-  const byesNeeded = nextPow2(shuffled.length) - shuffled.length;
-  const byePlayers = shuffled.slice(0, byesNeeded);
-  const pairPlayers = shuffled.slice(byesNeeded);
+// byeCounts tracks how many byes each player has ever received in this
+// room (persists across "Play Again" reruns, only resets in a brand new
+// room). Whoever has had the fewest byes gets priority for the next one,
+// with a shuffle first so ties still break randomly — this is what keeps
+// odd-numbered brackets fair over a long session instead of leaving it to
+// pure chance every single time.
+function generateRound(playerIds, roundNum, season, byeCounts) {
+  const counts = byeCounts || {};
+  const ranked = shuffle(playerIds).sort((a, b) => (counts[a] || 0) - (counts[b] || 0));
+  const byesNeeded = nextPow2(ranked.length) - ranked.length;
+  const byePlayers = ranked.slice(0, byesNeeded);
+  const pairPlayers = shuffle(ranked.slice(byesNeeded));
   const matchups = [];
   let idx = 0;
   const prefix = `s${season || 1}r${roundNum}m`;
@@ -1028,8 +1035,10 @@ function PokemonDraftBattleMultiplayer() {
               teams[pid] = draftStates[i].picks.map((m) => ({ ...m, currentHp: m.maxHp }));
             });
             const roundNum = latest.draftRound || 1;
-            const matchups = generateRound(participants, roundNum, latest.season);
-            const updated = { ...latest, status: "bracket", teams, bracket: { round: roundNum, matchups }, rev: latest.rev + 1 };
+            const matchups = generateRound(participants, roundNum, latest.season, latest.byeCounts);
+            const byeCounts = { ...(latest.byeCounts || {}) };
+            matchups.forEach((mu) => { if (!mu.p2) byeCounts[mu.p1] = (byeCounts[mu.p1] || 0) + 1; });
+            const updated = { ...latest, status: "bracket", teams, bracket: { round: roundNum, matchups }, byeCounts, rev: latest.rev + 1 };
             const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
             if (ok) {
               await Promise.all(matchups.filter((m) => m.p2).map((mu) => storageSet(matchKey(roomCodeState, mu.id), buildFreshMatch(updated, mu))));
@@ -1229,7 +1238,7 @@ function PokemonDraftBattleMultiplayer() {
         players: [{ id: myId, name: myName.trim() }],
         maxPlayers: 8, teamSize: 4,
         status: "lobby", teams: null, bracket: null, champion: null,
-        draftParticipants: null, draftRound: 0, season: 1,
+        draftParticipants: null, draftRound: 0, season: 1, byeCounts: {},
         rev: 0, createdAt: Date.now(),
       };
       await storageSet(roomKey(code), initial);
@@ -1296,7 +1305,7 @@ function PokemonDraftBattleMultiplayer() {
         players: [{ id: myId, name: myName.trim() }, { id: AI_BOT_ID, name: AI_BOT_NAME }],
         maxPlayers: 2, teamSize: 4,
         status: "lobby", teams: null, bracket: null, champion: null,
-        draftParticipants: null, draftRound: 0, season: 1, vsAI: true,
+        draftParticipants: null, draftRound: 0, season: 1, byeCounts: {}, vsAI: true,
         rev: 0, createdAt: Date.now(),
       };
       await storageSet(roomKey(code), initial);
