@@ -435,6 +435,94 @@ function buildFreshMatch(room, mu) {
   };
 }
 
+// Practice vs AI: a synthetic second "player" with a fixed id, whose
+// draft and battle turns are simulated entirely inside the human's own
+// browser (no server-side game logic exists in this app — the human's
+// tick loop just also submits the bot's move key, same as a second real
+// client would). Kept to a single 1v1 practice match, not a full bracket
+// of bots.
+const AI_BOT_ID = "AI_BOT";
+const AI_BOT_NAME = "Wild Bot";
+
+function aiChooseLead(team) {
+  let best = 0, bestScore = -Infinity;
+  team.forEach((m, i) => {
+    const score = m.stats.hp + m.stats.attack + m.stats.defense + m.stats.speed + Math.random() * 20;
+    if (score > bestScore) { bestScore = score; best = i; }
+  });
+  return best;
+}
+
+function aiChooseSwitch(team, oppActive, excludeIdx) {
+  let best = -1, bestScore = -Infinity;
+  team.forEach((m, i) => {
+    if (m.currentHp <= 0 || i === excludeIdx) return;
+    let incomingEff = 0;
+    oppActive.types.forEach((t) => { incomingEff += effectiveness(t, m.types); });
+    const hpFrac = m.currentHp / m.maxHp;
+    const score = -incomingEff * 10 + hpFrac * 5 + Math.random() * 3;
+    if (score > bestScore) { bestScore = score; best = i; }
+  });
+  return best;
+}
+
+function aiPickMove(mon, oppActive) {
+  const options = mon.moves
+    .map((m, i) => ({ i, m }))
+    .filter(({ m, i }) => !(mon.cooldowns && mon.cooldowns[i] > 0));
+  if (options.length === 0) return 0;
+  const scored = options
+    .map(({ i, m }) => ({ i, score: m.power * effectiveness(m.type, oppActive.types) + Math.random() * 15 }))
+    .sort((a, b) => b.score - a.score);
+  // Mostly picks its best option, occasionally picks a weaker one so it
+  // isn't perfectly predictable to play against.
+  if (scored.length === 1 || Math.random() < 0.75) return scored[0].i;
+  return scored[Math.floor(Math.random() * Math.min(3, scored.length))].i;
+}
+
+// Returns the bot's action for whatever phase the match is currently in,
+// or null if it's not the bot's turn to act right now.
+function computeAiAction(match, aiSide) {
+  const oppSide = aiSide === match.p1 ? match.p2 : match.p1;
+  if (match.status === "choose-lead") {
+    return { leadIdx: aiChooseLead(match.teams[aiSide]) };
+  }
+  if (match.pendingSwitch === aiSide) {
+    const idx = aiChooseSwitch(match.teams[aiSide], match.teams[oppSide][match.activeIdx[oppSide]], match.activeIdx[aiSide]);
+    return idx >= 0 ? { switchIdx: idx } : null;
+  }
+  if (match.status === "battle" && !match.pendingSwitch) {
+    const mon = match.teams[aiSide][match.activeIdx[aiSide]];
+    const opp = match.teams[oppSide][match.activeIdx[oppSide]];
+    const hpFrac = mon.currentHp / mon.maxHp;
+    if (hpFrac < 0.3 && Math.random() < 0.5) {
+      const switchIdx = aiChooseSwitch(match.teams[aiSide], opp, match.activeIdx[aiSide]);
+      if (switchIdx >= 0) return { switchIdx };
+    }
+    return aiPickMove(mon, opp);
+  }
+  return null;
+}
+
+// Shared draft-kickoff used by both a normal tournament start and an AI
+// practice room: builds each player's private draft pool, except the bot
+// (if present) whose team is picked instantly rather than shown a pool.
+async function beginDraft(code, roomObj) {
+  const region = REGIONS.find((r) => r.key === roomObj.region) || REGIONS[0];
+  await Promise.all(roomObj.players.map(async (p) => {
+    if (p.id === AI_BOT_ID) {
+      const picks = shuffle(await fetchPool(region.range[0], region.range[1], roomObj.teamSize));
+      await storageSet(draftKeyFor(code, p.id), { pool: [], picks, done: true });
+    } else {
+      const pool = shuffle(await fetchPool(region.range[0], region.range[1], 10));
+      await storageSet(draftKeyFor(code, p.id), { pool, picks: [], done: false });
+    }
+  }));
+  const updated = { ...roomObj, status: "drafting", draftParticipants: roomObj.players.map((p) => p.id), draftRound: 1, rev: roomObj.rev + 1 };
+  await storageSet(roomKey(code), updated);
+  return updated;
+}
+
 // Real backend now: shared state lives on the server (KV REST API), and
 // "personal" (non-shared) state lives in the browser's own localStorage
 // so an id/room survives a refresh without leaking across devices.
@@ -996,6 +1084,21 @@ function PokemonDraftBattleMultiplayer() {
               lastReactionTsRef.current = 0;
             }
 
+            // The AI bot has no real client of its own — the human's tick
+            // loop submits its move on its behalf, exactly like a second
+            // real player would, so the rest of the resolution logic below
+            // needs no special-casing for it.
+            if (fresh.vsAI) {
+              const aiSide = myMu.p1 === AI_BOT_ID ? myMu.p1 : myMu.p2 === AI_BOT_ID ? myMu.p2 : null;
+              if (aiSide) {
+                const existingAiMove = await storageGet(moveKeyFor(roomCodeState, myMu.id, aiSide));
+                if (existingAiMove === null) {
+                  const aiAction = computeAiAction(freshMatch, aiSide);
+                  if (aiAction !== null) await storageSet(moveKeyFor(roomCodeState, myMu.id, aiSide), aiAction);
+                }
+              }
+            }
+
             const incomingReact = await storageGet(reactKeyFor(roomCodeState, myMu.id, myId));
             if (incomingReact && incomingReact.ts !== lastReactionTsRef.current) {
               lastReactionTsRef.current = incomingReact.ts;
@@ -1171,20 +1274,41 @@ function PokemonDraftBattleMultiplayer() {
     try {
       const latest = await storageGet(roomKey(roomCodeState));
       if (!latest || latest.hostId !== myId || latest.status !== "lobby" || latest.players.length < 2) { setStartingTournament(false); return; }
-      const region = REGIONS.find((r) => r.key === latest.region) || REGIONS[0];
-      const pools = await Promise.all(latest.players.map(async (p) => ({
-        id: p.id,
-        pool: shuffle(await fetchPool(region.range[0], region.range[1], 10)),
-      })));
-      await Promise.all(pools.map(({ id, pool }) => storageSet(draftKeyFor(roomCodeState, id), { pool, picks: [], done: false })));
-      const updated = { ...latest, status: "drafting", draftParticipants: latest.players.map((p) => p.id), draftRound: 1, rev: latest.rev + 1 };
-      const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
-      if (ok) setRoom(updated);
-      else setError("Couldn't start — try again.");
+      const updated = await beginDraft(roomCodeState, latest);
+      setRoom(updated);
     } catch {
       setError("Couldn't reach the Pokédex network. Try again.");
     }
     setStartingTournament(false);
+  }
+
+  // A solo practice room: you + one AI opponent, skipping the lobby wait
+  // entirely since there's no one else to wait for.
+  async function createAiRoom() {
+    if (!myName.trim()) { setError("Enter your name first."); return; }
+    setLoading(true); setError("");
+    try {
+      const code = genCode();
+      const region = REGIONS.find((r) => r.key === selectedRegion) || REGIONS[0];
+      const initial = {
+        code, region: region.key, regionLabel: region.label,
+        hostId: myId, hostName: myName.trim(),
+        players: [{ id: myId, name: myName.trim() }, { id: AI_BOT_ID, name: AI_BOT_NAME }],
+        maxPlayers: 2, teamSize: 4,
+        status: "lobby", teams: null, bracket: null, champion: null,
+        draftParticipants: null, draftRound: 0, season: 1, vsAI: true,
+        rev: 0, createdAt: Date.now(),
+      };
+      await storageSet(roomKey(code), initial);
+      const updated = await beginDraft(code, initial);
+      await storageSet(ACTIVE_ROOM_KEY, { code, name: myName.trim() }, false);
+      setRoomCodeState(code);
+      setRoom(updated);
+      setScreen("draft");
+    } catch {
+      setError("Couldn't start practice match. Try again.");
+    }
+    setLoading(false);
   }
 
   // Resets the SAME room back to its lobby so everyone can run it back
@@ -1202,10 +1326,15 @@ function PokemonDraftBattleMultiplayer() {
     };
     const ok = await commitIfRevMatches(roomKey(roomCodeState), latest, updated);
     if (ok) {
-      setRoom(updated); setScreen("lobby");
       setMatch(null); setMyDraft(null); setMySubmitted(false); setShowSwitchMenu(false);
       setSpectateMatchId(null); setSpectatedMatch(null);
       currentMatchIdRef.current = null; turnCounterRef.current = 0; victoryPlayedRef.current = false;
+      if (updated.vsAI) {
+        const redrafted = await beginDraft(roomCodeState, updated);
+        setRoom(redrafted); setScreen("draft");
+      } else {
+        setRoom(updated); setScreen("lobby");
+      }
     } else {
       setError("Couldn't restart — try again.");
     }
@@ -1421,6 +1550,9 @@ function PokemonDraftBattleMultiplayer() {
           {error && <div className="text-xs text-[#D64545]">{error}</div>}
           <button onClick={createRoom} disabled={loading} style={{ background: "#D64545", ...display, fontSize: "10px" }} className="w-full px-4 py-3 rounded-xl text-white disabled:opacity-60">
             {loading ? "SUMMONING…" : "CREATE ROOM"}
+          </button>
+          <button onClick={createAiRoom} disabled={loading} style={{ background: "#3FA796", ...display, fontSize: "10px" }} className="w-full px-4 py-3 rounded-xl text-white disabled:opacity-60">
+            {loading ? "SUMMONING…" : "PRACTICE VS AI"}
           </button>
           <button onClick={() => setScreen("home")} className="text-xs opacity-60 underline">back</button>
         </div>
